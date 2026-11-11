@@ -161,6 +161,7 @@ class TaskBudgetEnvelope(StrictModel):
         multiplier: float = 1.2,
         selector_reserve: int = 1_000_000,
         stage_limit: int = 1_200_000,
+        min_probe_reserve: int = 64_000,
     ) -> None:
         """Freeze the 1.2x post-milestone identity verification budget exactly once."""
 
@@ -173,9 +174,10 @@ class TaskBudgetEnvelope(StrictModel):
             max(0, available - selector_reserve),
             min(stage_limit, max(0, available - min(selector_reserve, 256_000))),
         )
+        scaled = math.ceil(max(1, self.total_tokens_used) * multiplier)
         self.verification_window_token_limit = min(
             remaining,
-            math.ceil(max(1, self.total_tokens_used) * multiplier),
+            max(scaled, min(min_probe_reserve, remaining)),
         )
         self.refresh_verification_usage()
 

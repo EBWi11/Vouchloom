@@ -1602,7 +1602,9 @@ class TaskMemoryStore:
                 entity_id=parent.entity_id if parent is not None else entity_id,
                 fsm_id=parent.fsm_id if parent is not None else fsm_id,
                 current_state_id=(
-                    parent.current_state_id if parent is not None else initial_state_id
+                    initial_state_id
+                    if parent is None or parent.lifecycle == "completed"
+                    else parent.current_state_id
                 ),
                 summary="An evidence-backed route is being explored.",
                 updated_attempt=attempt,

@@ -125,6 +125,11 @@ class SemanticRelationOutput(StrictModel):
     reason: str = Field(min_length=1, max_length=400)
 
 
+class FinalCandidateSelectionOutput(StrictModel):
+    attempt_number: int = Field(ge=1)
+    rationale: str = Field(min_length=1, max_length=600)
+
+
 class SemanticArbiterSuite:
     """Isolated text-only semantic arbiters with deterministic fallbacks."""
 
@@ -475,3 +480,112 @@ class SemanticArbiterSuite:
             res.model_copy(update={"command_receipt_sha256": cmd.sha256}),
             audit,
         )
+
+    async def classify_candidate_causal_alignment(
+        self, payload: dict[str, Any]
+    ) -> tuple[bool, ArbiterAudit | None]:
+        """Audit pre-execution candidate alignment (True if explicit safe/no-fault).
+
+        When no arbiter runtime is configured, returns (False, None) so offline
+        or deterministic test runs proceed cleanly; when configured, fails closed
+        to True on invalid/unavailable arbiter output, matching bug_hunter's
+        _classify_artifact_fault_claim.
+        """
+
+        if self._runtime is None:
+            return False, None
+        res, audit = await self._run_text_stage(
+            arbiter_id="vouchloom-artifact-causal-alignment",
+            prompt=(
+                "Name any required causal qualifier from the objective, classify "
+                "its binding (bound | absent | not_applicable), and return "
+                "explicit_no_fault_or_unproven when the candidate omits the "
+                "required qualifier or explicitly states a safe/no-fault path."
+            ),
+            output_model=CausalAlignmentOutput,
+            payload=payload,
+        )
+        if not isinstance(res, CausalAlignmentOutput):
+            return True, audit
+        return res.classification == "explicit_no_fault_or_unproven", audit
+
+    async def classify_semantic_duplicate(
+        self,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+    ) -> tuple[bool, ArbiterAudit | None]:
+        """Detect repeated causal producer/constraint across two attempts."""
+
+        if self._runtime is None:
+            return False, None
+        res, audit = await self._run_text_stage(
+            arbiter_id="vouchloom-semantic-relation",
+            prompt=(
+                "Compare previous and current attempt metadata. Return "
+                "semantic_duplicate only when both test the same causal "
+                "producer, guard, and constraint with mere byte/layout variation."
+            ),
+            output_model=SemanticRelationOutput,
+            payload={"previous": previous, "current": current},
+        )
+        return (
+            isinstance(res, SemanticRelationOutput)
+            and res.decision == "semantic_duplicate"
+        ), audit
+
+    async def select_final_candidate(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        objective: str,
+        budget_tokens: int = 128_000,
+    ) -> tuple[int | None, str | None, ArbiterAudit | None]:
+        """Isolated two-stage (primary + compact fallback) final candidate selector."""
+
+        if self._runtime is None or len(candidates) < 2 or budget_tokens < 2_048:
+            return None, None, None
+        valid_numbers = {
+            int(num)
+            for c in candidates
+            if isinstance((num := c.get("attempt_number") or c.get("attempt")), int)
+        }
+        fallback_reserve = min(32_000, max(1_024, budget_tokens // 4))
+        primary_budget = max(1_024, budget_tokens - fallback_reserve)
+        payload = {"objective": objective, "candidates": candidates[:2]}
+
+        res, primary_audit = await self._run_text_stage(
+            arbiter_id="vouchloom-final-selector-primary",
+            prompt=(
+                "Select the single final candidate from the two verified "
+                "milestone candidates. Require causal binding to the stated "
+                "objective and minimize extraneous preconditions before raw size."
+            ),
+            output_model=FinalCandidateSelectionOutput,
+            payload=payload,
+            max_total_tokens=primary_budget,
+        )
+        if (
+            isinstance(res, FinalCandidateSelectionOutput)
+            and res.attempt_number in valid_numbers
+        ):
+            return res.attempt_number, res.rationale, primary_audit
+
+        fb_res, fb_audit = await self._run_text_stage(
+            arbiter_id="vouchloom-final-selector-fallback",
+            prompt="Return one valid attempt_number and concise rationale immediately.",
+            output_model=FinalCandidateSelectionOutput,
+            payload=payload,
+            max_total_tokens=fallback_reserve,
+        )
+        merged_audit = ArbiterAudit(
+            arbiter_id="vouchloom-final-selector",
+            model_calls=primary_audit.model_calls + fb_audit.model_calls,
+            usage=add_usage(primary_audit.usage, fb_audit.usage),
+            receipts=[*primary_audit.receipts, *fb_audit.receipts],
+        )
+        if (
+            isinstance(fb_res, FinalCandidateSelectionOutput)
+            and fb_res.attempt_number in valid_numbers
+        ):
+            return fb_res.attempt_number, fb_res.rationale, merged_audit
+        return None, None, merged_audit

@@ -18,6 +18,7 @@ from vouchloom import (
     ModelUsage,
     ProofLedgerEntry,
     RouteSummary,
+    SemanticArbiterSuite,
     StateMachineRegistry,
     StateMachineSpec,
     StateNodeSpec,
@@ -304,3 +305,182 @@ def test_memory_review_transition_audit_blocks_self_created_stop(
     )
     assert audit.severity == "invalid"
     assert "stop_without_preexisting_required_contradiction" in audit.codes
+
+
+@pytest.mark.asyncio
+async def test_bug_hunter_fidelity_safe_path_startup_retry_and_final_selector(
+    tmp_path: Path,
+) -> None:
+    """Verify wired gates: safe_path + 2-vote diag, startup retry, & 2-PoC selector."""
+
+    reg = StateMachineRegistry()
+    reg.register(
+        StateMachineSpec(
+            fsm_id="fidelity-fsm",
+            description="Fidelity check",
+            initial_state="solve",
+            states=[
+                StateNodeSpec(id="solve", title="Solve", system_prompt="Emit bytes"),
+                StateNodeSpec(
+                    id="done", title="Done", system_prompt="Done", is_terminal=True
+                ),
+            ],
+            transitions=[TransitionSpec(id="t_done", source="solve", target="done")],
+        )
+    )
+
+    worker_step = 0
+
+    class FidelityWorkerBackend:
+        async def complete(
+            self,
+            *,
+            messages: list[dict[str, Any]],
+            output_schema: dict[str, Any],
+            allow_tools: bool,
+            max_output_tokens: int | None,
+        ) -> ModelTurnResponse:
+            nonlocal worker_step
+            worker_step += 1
+            payload = f"CANDIDATE_{worker_step}".encode("ascii")
+            b64 = base64.b64encode(payload).decode("ascii")
+            return ModelTurnResponse(
+                model_id="worker",
+                usage=ModelUsage(total_tokens=200),
+                final_text=json.dumps(
+                    {
+                        "source": {"kind": "inline", "artifact_base64": b64},
+                        "rationale": f"Candidate {worker_step}",
+                        "causal_dimension": "input_boundary",
+                        "changed_constraint": f"constraint-{worker_step}",
+                        "semantic_checkpoint": f"ckpt-{worker_step}",
+                    }
+                ),
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    arbiter_responses: list[dict[str, Any]] = [
+        # Candidate 1: rejected pre-execution as safe_path + 2/2 semantic_no_fault!
+        {
+            "required_qualifier": "async_state",
+            "qualifier_binding": "absent",
+            "classification": "explicit_no_fault_or_unproven",
+            "reason": "Missing async_state qualifier",
+        },
+        {"decision": "semantic_no_fault", "reason": "Acceptance only"},
+        {"decision": "semantic_no_fault", "reason": "Acceptance only"},
+        # Candidate 2: admitted!
+        {
+            "required_qualifier": "async_state",
+            "qualifier_binding": "bound",
+            "classification": "admit_candidate",
+            "reason": "Bound",
+        },
+        # Candidate 3: admitted + distinct_experiment!
+        {
+            "required_qualifier": "async_state",
+            "qualifier_binding": "bound",
+            "classification": "admit_candidate",
+            "reason": "Bound",
+        },
+        {"decision": "distinct_experiment", "reason": "Different producer"},
+        # Final 2-candidate selector picks attempt 3!
+        {"attempt_number": 3, "rationale": "Cleaner minimal precondition"},
+    ]
+    arb_idx = 0
+
+    class FidelityArbiterBackend:
+        async def complete(
+            self,
+            *,
+            messages: list[dict[str, Any]],
+            output_schema: dict[str, Any],
+            allow_tools: bool,
+            max_output_tokens: int | None,
+        ) -> ModelTurnResponse:
+            nonlocal arb_idx
+            item = arbiter_responses[min(arb_idx, len(arbiter_responses) - 1)]
+            arb_idx += 1
+            return ModelTurnResponse(
+                model_id="arbiter",
+                usage=ModelUsage(total_tokens=50),
+                final_text=json.dumps(item),
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    eval_calls = 0
+
+    class StartupNoiseThenMilestoneEvaluator:
+        async def evaluate_candidate(
+            self,
+            content: bytes,
+            *,
+            route: RouteSummary,
+            is_replay: bool = False,
+        ) -> ExecutionReceipt:
+            nonlocal eval_calls
+            eval_calls += 1
+            # First ever evaluation hits environment_startup noise -> auto-retried!
+            if eval_calls == 1:
+                return ExecutionReceipt.build(
+                    subject_sha256="1" * 64,
+                    output="ASLR personality startup error",
+                    exit_code=77,
+                    phase="environment_startup",
+                    startup_failure="msan_personality_aslr",
+                    input_consumption="not_observed",
+                )
+            fp = "a" * 64 if content == b"CANDIDATE_2" else "b" * 64
+            return ExecutionReceipt.build(
+                subject_sha256="2" * 64,
+                output="Milestone hit",
+                exit_code=77,
+                observed_target="official_bin",
+                phase="target_runtime",
+                input_consumption="observed",
+                fingerprint_sha256=fp,
+            )
+
+    worker_backend = FidelityWorkerBackend()
+    orch = TeamOrchestrator(
+        registry=reg,
+        worker_runtime_factory=lambda wd: ManagedAgentRuntime(
+            worker_backend, sandbox=LocalDirectorySandbox(wd)
+        ),
+        arbiters=SemanticArbiterSuite(ManagedAgentRuntime(FidelityArbiterBackend())),
+        evaluator=StartupNoiseThenMilestoneEvaluator(),
+        concurrency=1,
+    )
+
+    res = await orch.run_task(
+        task_id="fidelity-01",
+        root_fsm_id="fidelity-fsm",
+        task_dir=tmp_path / "fidelity-run",
+        objective="Trigger async_state milestone",
+        max_generations=6,
+    )
+
+    # Attempt 1 was safe_path blocked with semantic_no_fault
+    assert res.attempts[0].status == "blocked"
+    assert res.attempts[0].block_category == "safe_path"
+    assert res.attempts[0].safe_path_diagnostic == "semantic_no_fault"
+    # Attempts 2 & 3 both hit milestones (attempt 2 survived startup retry!)
+    assert res.attempts[1].status == "milestone_candidate"
+    assert res.attempts[2].status == "milestone_candidate"
+    # Two-stage final selector chose attempt 3 and wrote WAL final-intent.json!
+    assert res.final_artifact == b"CANDIDATE_3"
+    intent = json.loads(
+        (tmp_path / "fidelity-run" / "final-intent.json").read_text(encoding="utf-8")
+    )
+    assert intent["attempt_number"] == 3
+    assert intent["selection_method"] == "agent_selected"
+
+    # Authoritative core.latest-runtime & core.latest-gap were merged into memory.json
+    mem = TaskMemoryStore(
+        tmp_path / "fidelity-run" / "memory.json", "fidelity-01"
+    ).load()
+    assert any(x.key == "core.latest-runtime" for x in mem.proof_ledger)

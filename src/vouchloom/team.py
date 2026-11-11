@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -56,8 +58,10 @@ from vouchloom.memory import (
     TaskMemorySnapshot,
     TaskMemoryStore,
     conclusion_rejection_reason,
+    dependency_closed_carrier_prefix_frontier,
     dependency_closed_runtime_frontier,
     ledger_entry_contradicts_route,
+    ledger_gap_blocks_construction,
 )
 from vouchloom.models import (
     ROTATABLE_CAUSAL_DIMENSIONS,
@@ -67,8 +71,14 @@ from vouchloom.models import (
     StrictModel,
     TaskBudgetEnvelope,
 )
-from vouchloom.proof import delivery_stage_ready
+from vouchloom.proof import (
+    Capability,
+    build_capability_plan,
+    delivery_stage_ready,
+    project_proof_graph,
+)
 from vouchloom.receipts import (
+    ActionReceipt,
     ExecutionReceipt,
     NextAction,
     SidebandSignal,
@@ -76,6 +86,7 @@ from vouchloom.receipts import (
 from vouchloom.request_budget import RequestBudget
 from vouchloom.runtime import ManagedAgentRuntime
 
+MIN_RUNNABLE_STAGE_TOKENS = 4_096
 SEMANTIC_ROUTE_FAILURES = frozenset(
     {"target_no_effect", "semantic_route_duplicate", "duplicate_candidate"}
 )
@@ -152,6 +163,8 @@ class AttemptRecord(StrictModel):
     block_category: BlockCategory | None = None
     artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     artifact_size: int | None = Field(default=None, ge=1)
+    artifact_hex_preview: str | None = Field(default=None, max_length=128)
+    artifact_ascii_preview: str | None = Field(default=None, max_length=64)
     causal_dimension: CausalDimension = "unclassified"
     changed_constraint: str | None = None
     semantic_checkpoint: str | None = None
@@ -166,6 +179,132 @@ class AttemptRecord(StrictModel):
     def stopped_at_startup(self) -> bool:
         receipt = self.replay_receipt or self.initial_receipt
         return receipt is not None and receipt.phase == "environment_startup"
+
+    def current_receipt(self) -> ExecutionReceipt | None:
+        if (
+            self.replay_receipt is not None
+            and self.replay_receipt.phase == "target_runtime"
+        ):
+            return self.replay_receipt
+        if (
+            self.initial_receipt is not None
+            and self.initial_receipt.phase == "target_runtime"
+        ):
+            return self.initial_receipt
+        return self.replay_receipt or self.initial_receipt
+
+    def agent_feedback(self) -> dict[str, Any]:
+        """Bounded retry view (from CyberGymAttempt.agent_feedback)."""
+
+        receipt = self.current_receipt()
+        fb: dict[str, Any] = {
+            "attempt": self.number,
+            "route_id": self.route_id,
+            "artifact_sha256": self.artifact_sha256,
+            "artifact_size": self.artifact_size,
+            "artifact_hex_preview": self.artifact_hex_preview,
+            "artifact_ascii_preview": self.artifact_ascii_preview,
+            "exit_code": receipt.exit_code if receipt is not None else None,
+            "duplicate": self.duplicate,
+            "semantic_duplicate": self.semantic_duplicate,
+            "causal_dimension": self.causal_dimension,
+            "changed_constraint": self.changed_constraint,
+            "semantic_checkpoint": self.semantic_checkpoint,
+            "status": self.status,
+        }
+        if receipt is not None:
+            fb["execution_receipt"] = receipt.model_dump(mode="json")
+        if self.safe_path_diagnostic is not None:
+            fb["safe_path_diagnostic"] = self.safe_path_diagnostic
+        if self.block_category is not None:
+            fb["failure_category"] = self.block_category
+        return fb
+
+
+def authoritative_attempt_ledger_updates(
+    attempt: AttemptRecord,
+) -> list[ProofLedgerEntry]:
+    """Port of cybergym_memory.authoritative_attempt_ledger_updates."""
+
+    if attempt.status not in {"submitted", "milestone_candidate"}:
+        return []
+    if attempt.stopped_at_startup():
+        receipt = attempt.current_receipt()
+        startup = (
+            receipt.startup_failure if receipt else None
+        ) or "environment startup failure"
+        ev = [f"Core attempt {attempt.number}: {startup} before target runtime."]
+        return [
+            ProofLedgerEntry(
+                key="core.latest-runtime",
+                section="checkpoint",
+                claim="Stopped during startup; target runtime reach remains unproved.",
+                status="hypothesis",
+                evidence=ev,
+                route_id=attempt.route_id,
+                entity_id=attempt.entity_id,
+                updated_attempt=attempt.number,
+            ),
+            ProofLedgerEntry(
+                key="core.latest-gap",
+                section="open_gap",
+                claim="Obtain a target_runtime execution receipt before advancing.",
+                status="hypothesis",
+                evidence=ev,
+                route_id=attempt.route_id,
+                entity_id=attempt.entity_id,
+                updated_attempt=attempt.number,
+            ),
+        ]
+    ev = [f"Core attempt {attempt.number}: execution status {attempt.status}."]
+    if attempt.status == "milestone_candidate":
+        return [
+            ProofLedgerEntry(
+                key="core.latest-runtime",
+                section="checkpoint",
+                claim="Candidate produced a replay-confirmed runtime milestone.",
+                status="runtime_observed",
+                evidence=ev,
+                route_id=attempt.route_id,
+                entity_id=attempt.entity_id,
+                updated_attempt=attempt.number,
+            ),
+            ProofLedgerEntry(
+                key="core.latest-gap",
+                section="open_gap",
+                claim=(
+                    "Verify literal objective identity or compare one distinct "
+                    "source-backed causal operation while retaining fallback."
+                ),
+                status="hypothesis",
+                evidence=ev,
+                route_id=attempt.route_id,
+                entity_id=attempt.entity_id,
+                updated_attempt=attempt.number,
+            ),
+        ]
+    return [
+        ProofLedgerEntry(
+            key="core.latest-runtime",
+            section="checkpoint",
+            claim="Completed cleanly; downstream sink reach remains unproved.",
+            status="runtime_observed",
+            evidence=ev,
+            route_id=attempt.route_id,
+            entity_id=attempt.entity_id,
+            updated_attempt=attempt.number,
+        ),
+        ProofLedgerEntry(
+            key="core.latest-gap",
+            section="open_gap",
+            claim="Determine deepest runtime checkpoint reached before varying bytes.",
+            status="hypothesis",
+            evidence=ev,
+            route_id=attempt.route_id,
+            entity_id=attempt.entity_id,
+            updated_attempt=attempt.number,
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +893,87 @@ def _read_work_artifact_sync(work_dir: Path, rel_path: str) -> bytes | None:
     return cand.read_bytes()
 
 
+def _artifact_previews(content: bytes) -> tuple[str, str]:
+    preview = content[:64]
+    return (
+        preview.hex(),
+        "".join(chr(b) if 32 <= b <= 126 else "." for b in preview),
+    )
+
+
+def _prepare_worker_scratch_sync(
+    work_dir: Path,
+    *,
+    task_dir: Path,
+    required_artifact_path: str | None,
+    prior_attempt_number: int | None,
+) -> str | None:
+    """Clear stale outputs & publish read-only 0o444 /work/prior.artifact.bin."""
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    for rel in filter(
+        None,
+        (required_artifact_path, "research-checkpoint.json", "prior.artifact.bin"),
+    ):
+        target = work_dir / rel
+        if target.exists():
+            os.chmod(target, 0o600)
+            target.unlink()
+
+    if prior_attempt_number is None:
+        return None
+    src_file = task_dir / "attempts" / f"attempt-{prior_attempt_number:02d}.bin"
+    if not src_file.is_file():
+        return None
+    prior_dest = work_dir / "prior.artifact.bin"
+    prior_dest.write_bytes(src_file.read_bytes())
+    os.chmod(prior_dest, 0o444)
+    return "/work/prior.artifact.bin"
+
+
+def _load_sidecar_checkpoint_sync(work_dir: Path) -> ResearchHandoff | None:
+    """Salvage /work/research-checkpoint.json written before heavy builds/timeouts."""
+
+    sidecar = work_dir / "research-checkpoint.json"
+    if not sidecar.is_file():
+        return None
+    try:
+        raw = json.loads(sidecar.read_text(encoding="utf-8"))
+        return ResearchHandoff.model_validate(raw)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _write_final_intent_and_artifact_sync(
+    task_dir: Path,
+    *,
+    attempt_number: int,
+    selection_method: str,
+    selection_rationale: str,
+) -> bytes | None:
+    """Write-ahead log final-intent.json before freezing single final.bin."""
+
+    cand_file = task_dir / "attempts" / f"attempt-{attempt_number:02d}.bin"
+    if not cand_file.is_file():
+        return None
+    raw = cand_file.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    intent_path = task_dir / "final-intent.json"
+    intent_payload = {
+        "attempt_number": attempt_number,
+        "artifact_sha256": digest,
+        "selection_method": selection_method,
+        "selection_rationale": selection_rationale,
+        "finalized_at": datetime.now(UTC).isoformat(),
+    }
+    intent_path.write_text(
+        json.dumps(intent_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (task_dir / "final.bin").write_bytes(raw)
+    return raw
+
+
 def convert_handoff_items_to_updates(
     items: Sequence[MemoryItem],
     *,
@@ -885,6 +1105,7 @@ class TeamOrchestrator:
         spawned_entity_fsms: set[tuple[str, str]] = {("root", root_fsm_id)}
         required_actions_by_route: dict[str, NextAction] = {}
         retried_receipt_ids: set[str] = set()
+        bounded_action_signatures: dict[str, set[tuple[str, str, str]]] = {}
         reviews_completed = 0
 
         # Ensure initial root route exists
@@ -897,7 +1118,7 @@ class TeamOrchestrator:
         )
 
         for generation in range(1, max_generations + 1):
-            if budget.remaining_tokens < 16_000:
+            if budget.remaining_tokens < MIN_RUNNABLE_STAGE_TOKENS:
                 if (
                     reviews_completed < 2
                     and not any(
@@ -963,22 +1184,69 @@ class TeamOrchestrator:
                         spawned_entity_fsms=spawned_entity_fsms,
                         required_actions_by_route=required_actions_by_route,
                         retried_receipt_ids=retried_receipt_ids,
+                        bounded_action_signatures=bounded_action_signatures,
                     )
                     for route in batch_routes
                 )
             )
 
-        # Finalize task outcome & deterministic audit ZIP
-        winning = next(
-            (a for a in result.attempts if a.status == "milestone_candidate"),
-            None,
-        )
+        # Finalize task outcome (two-stage selector + WAL intent + deterministic ZIP)
+        distinct_milestones = [
+            a
+            for a in result.attempts
+            if a.status == "milestone_candidate"
+            and not a.duplicate
+            and not a.semantic_duplicate
+        ]
+        winning: AttemptRecord | None = None
+        sel_method = "single_milestone"
+        sel_rationale = "Only one distinct candidate achieved runtime milestone."
+        if len(distinct_milestones) >= 2:
+            pair = distinct_milestones[:2]
+            (
+                chosen_num,
+                chosen_rat,
+                sel_audit,
+            ) = await self.arbiters.select_final_candidate(
+                [a.agent_feedback() for a in pair],
+                objective=objective,
+                budget_tokens=min(
+                    128_000,
+                    max(0, budget.total_token_limit - budget.total_tokens_used),
+                ),
+            )
+            if sel_audit is not None:
+                budget.charge(
+                    sel_audit.usage, model_calls=sel_audit.model_calls, role="selector"
+                )
+            winning = next((a for a in pair if a.number == chosen_num), None)
+            if winning is not None:
+                sel_method = "agent_selected"
+                sel_rationale = chosen_rat or "Selected by two-stage final arbiter."
+            else:
+                winning = sorted(
+                    pair,
+                    key=lambda a: (
+                        not bool(a.fingerprint_match),
+                        a.stopped_at_startup(),
+                        -a.number,
+                    ),
+                )[0]
+                sel_method = "deterministic_fallback"
+                sel_rationale = "Selected by deterministic causal/replay fallback."
+        elif distinct_milestones:
+            winning = distinct_milestones[0]
+
         artifacts_map: dict[str, bytes] = {}
         if winning is not None and winning.artifact_sha256 is not None:
-            cand_file = resolved_dir / "attempts" / f"attempt-{winning.number:02d}.bin"
-            if cand_file.is_file():
-                raw_final = cand_file.read_bytes()
-                (resolved_dir / "final.bin").write_bytes(raw_final)
+            raw_final = await asyncio.to_thread(
+                _write_final_intent_and_artifact_sync,
+                resolved_dir,
+                attempt_number=winning.number,
+                selection_method=sel_method,
+                selection_rationale=sel_rationale,
+            )
+            if raw_final is not None:
                 result.final_artifact = raw_final
                 result.final_artifact_sha256 = winning.artifact_sha256
                 artifacts_map["final.bin"] = raw_final
@@ -1026,6 +1294,7 @@ class TeamOrchestrator:
         spawned_entity_fsms: set[tuple[str, str]],
         required_actions_by_route: dict[str, NextAction],
         retried_receipt_ids: set[str],
+        bounded_action_signatures: dict[str, set[tuple[str, str, str]]],
     ) -> None:
         async with self.limiter.slot():
             board = store.load()
@@ -1060,15 +1329,29 @@ class TeamOrchestrator:
                 return
 
             work_dir = task_dir / "workers" / route.route_id
-            work_dir.mkdir(parents=True, exist_ok=True)
-            if state_node.required_artifact_path:
-                art_file = work_dir / state_node.required_artifact_path
-                if art_file.exists():
-                    art_file.unlink()
+            visible_ids = set(board.visible_route_ids()) | {route.route_id}
+            prior_attempt = next(
+                (
+                    a
+                    for a in reversed(result.attempts)
+                    if a.route_id in visible_ids
+                    and a.status in {"submitted", "milestone_candidate"}
+                ),
+                None,
+            )
+            prior_artifact_path = await asyncio.to_thread(
+                _prepare_worker_scratch_sync,
+                work_dir,
+                task_dir=task_dir,
+                required_artifact_path=state_node.required_artifact_path,
+                prior_attempt_number=(
+                    prior_attempt.number if prior_attempt is not None else None
+                ),
+            )
             memory_view_path = store.publish_agent_view(work_dir)
             snapshot = store.load().prompt_snapshot()
 
-            # Check deterministic RuntimeFrontier override
+            # Check deterministic RuntimeFrontier & CarrierPrefixFrontier overrides
             req_action = required_actions_by_route.get(route.route_id)
             if req_action is None and state_node.mode == "research":
                 rt_frontier = dependency_closed_runtime_frontier(
@@ -1087,10 +1370,69 @@ class TeamOrchestrator:
                         expected_observation=rt_frontier.gap_claim,
                     )
                     required_actions_by_route[route.route_id] = req_action
+                else:
+                    pf_frontier = dependency_closed_carrier_prefix_frontier(
+                        snapshot, route.route_id
+                    )
+                    if pf_frontier is not None and prior_artifact_path is not None:
+                        fid = hashlib.sha256(
+                            f"{pf_frontier.route_id}:{pf_frontier.transition_key}".encode()
+                        ).hexdigest()[:12]
+                        req_action = NextAction(
+                            id=f"carrier-prefix.{fid}",
+                            kind="mutate",
+                            target=(
+                                f"{prior_artifact_path}; advance only "
+                                f"{pf_frontier.transition_key}"
+                            ),
+                            expected_observation=pf_frontier.transition_claim,
+                        )
+                        required_actions_by_route[route.route_id] = req_action
 
-            delivery_mode = state_node.mode in {"delivery", "thin_mutation"}
+            # Bounded-action executor stage (<=2 signature variants per action id)
+            retained_entries = [
+                x for x in snapshot.proof_ledger if x.route_id == route.route_id
+            ]
+            by_key = {x.key: x for x in retained_entries}
+            has_construction_gap = any(
+                ledger_gap_blocks_construction(x, by_key)
+                for x in retained_entries
+                if x.section == "open_gap" and x.status == "hypothesis"
+            )
+            bounded_action_only = False
+            if (
+                req_action is not None
+                and state_node.mode in {"research", "bounded_action"}
+                and (
+                    state_node.mode == "bounded_action"
+                    or req_action.kind in {"build", "instrument"}
+                    or (req_action.kind == "inspect" and has_construction_gap)
+                )
+            ):
+                variants = bounded_action_signatures.setdefault(req_action.id, set())
+                if req_action.signature not in variants and len(variants) < 2:
+                    variants.add(req_action.signature)
+                    bounded_action_only = True
+
+            # Semantic no-fault diagnostic reopens ordinary research automatically
+            latest_route_attempt = next(
+                (a for a in reversed(result.attempts) if a.route_id == route.route_id),
+                None,
+            )
+            reopened_by_no_fault = (
+                latest_route_attempt is not None
+                and latest_route_attempt.safe_path_diagnostic == "semantic_no_fault"
+            )
+            delivery_mode = (
+                state_node.mode in {"delivery", "thin_mutation"}
+                and not bounded_action_only
+                and not reopened_by_no_fault
+            )
             if delivery_mode and delivery_stage_ready(
-                snapshot, route.route_id, anchor, has_concrete_carrier=True
+                snapshot,
+                route.route_id,
+                anchor,
+                has_concrete_carrier=prior_artifact_path is not None,
             ):
                 reopen, adm_audit = await self.arbiters.classify_delivery_admission(
                     {
@@ -1107,29 +1449,65 @@ class TeamOrchestrator:
                     delivery_mode = False
 
             output_model = (
-                WorkerHandoffOnlyOutput
+                ActionReceipt
+                if bounded_action_only
+                else WorkerHandoffOnlyOutput
                 if state_node.mode in {"core_action", "exploratory_probe"}
                 else (WorkerArtifactOnlyOutput if delivery_mode else WorkerModelOutput)
             )
+
+            # Enforce Single-State Agent CapabilityPlan via ProofGraph!
+            exec_receipts = [
+                rec
+                for a in result.attempts[-16:]
+                if (rec := a.current_receipt()) is not None
+            ]
+            proof_graph = project_proof_graph(
+                anchor_evidence=anchor,
+                snapshot=snapshot,
+                active_route_id=route.route_id,
+                execution_receipts=exec_receipts,
+            )
+            skill_stage = state_node.agent_stage or "analysis"
+            plan = build_capability_plan(
+                proof_graph,
+                [
+                    Capability(
+                        id=f"agent.{name}",
+                        stage=skill_stage,
+                        skill_name=name,
+                    )
+                    for name in (
+                        ()
+                        if bounded_action_only or state_node.mode == "thin_mutation"
+                        else state_node.allowed_skills
+                    )
+                    if name in self.skills
+                ],
+            )
             admitted_skills = tuple(
-                self.skills[name]
-                for name in state_node.allowed_skills
-                if name in self.skills
+                self.skills[c.skill_name]
+                for c in plan.capabilities
+                if c.skill_name is not None
             )
             stage_budget = min(
-                state_node.max_total_tokens, max(1_024, result.budget.remaining_tokens)
+                600_000 if bounded_action_only else state_node.max_total_tokens,
+                max(1_024, result.budget.remaining_tokens),
             )
             req_path = state_node.required_artifact_path if delivery_mode else None
             deadline_calls = (
                 state_node.artifact_deadline_tool_calls if delivery_mode else None
             )
+            fin_calls = 2 if bounded_action_only else state_node.finalization_tool_calls
             definition = AgentDefinition(
                 id=f"worker.{route.fsm_id}.{state_node.id}",
                 version=spec.version,
                 system_prompt=state_node.system_prompt,
                 output_model=output_model,
                 max_total_tokens=stage_budget,
-                max_output_tokens=state_node.max_output_tokens,
+                max_output_tokens=(
+                    1_024 if bounded_action_only else state_node.max_output_tokens
+                ),
                 request_budget=RequestBudget(
                     context_window_tokens=917_000,
                     max_output_tokens=state_node.max_output_tokens,
@@ -1137,10 +1515,13 @@ class TeamOrchestrator:
                 skills=admitted_skills,
                 required_artifact_path=req_path,
                 artifact_deadline_tool_calls=deadline_calls,
-                finalization_tool_calls=state_node.finalization_tool_calls,
+                finalization_tool_calls=fin_calls,
                 max_turn_seconds=state_node.max_turn_seconds,
             )
 
+            attempt_feedback = [
+                a.agent_feedback() for a in result.attempts if a.route_id in visible_ids
+            ][-16:]
             worker_payload = {
                 "task_id": result.task_id,
                 "objective": objective,
@@ -1148,8 +1529,12 @@ class TeamOrchestrator:
                 "entity_id": route.entity_id,
                 "fsm_id": route.fsm_id,
                 "state_id": state_node.id,
+                "proof_graph_sha256": proof_graph.sha256,
+                "capability_plan_sha256": plan.sha256,
                 "memory_capsule": snapshot.resume_capsule(),
                 "full_memory_path": memory_view_path,
+                "prior_artifact_path": prior_artifact_path,
+                "attempt_feedback": attempt_feedback,
                 "cross_entity_clues": self.supervisor.cross_entity_briefing(
                     board, route.entity_id
                 ),
@@ -1214,7 +1599,12 @@ class TeamOrchestrator:
                         )
                         return
 
-                salvaged = recover_research_handoff(err.last_final_text)
+                # Salvage 1) /work/research-checkpoint.json sidecar, 2) text handoff
+                salvaged = await asyncio.to_thread(
+                    _load_sidecar_checkpoint_sync, work_dir
+                )
+                if salvaged is None and not delivery_mode:
+                    salvaged = recover_research_handoff(err.last_final_text)
                 if salvaged is not None and not delivery_mode:
                     await self._process_handoff(
                         handoff=salvaged,
@@ -1231,6 +1621,10 @@ class TeamOrchestrator:
                         required_actions_by_route=required_actions_by_route,
                         retried_receipt_ids=retried_receipt_ids,
                     )
+                    return
+
+                if bounded_action_only and state_node.mode != "bounded_action":
+                    # Bounded-action executor is an optimization; fall back fail-open!
                     return
 
                 self._record_blocked_attempt(
@@ -1251,6 +1645,43 @@ class TeamOrchestrator:
                 return
             finally:
                 await worker_rt.aclose()
+
+            if bounded_action_only:
+                assert req_action is not None
+                act_rec = ActionReceipt.model_validate(trace.result)
+                synth_handoff = ResearchHandoff(
+                    summary=act_rec.observation,
+                    next_step=act_rec.changed_constraint,
+                    next_action=req_action,
+                    action_receipt=act_rec,
+                    items=[
+                        MemoryItem(
+                            id=f"action-receipt.{req_action.id[:40]}",
+                            kind="observation",
+                            status="runtime_observed",
+                            claim=act_rec.changed_constraint,
+                            evidence=[act_rec.observation],
+                            role="derived",
+                        )
+                    ],
+                )
+                required_actions_by_route.pop(route.route_id, None)
+                await self._process_handoff(
+                    handoff=synth_handoff,
+                    command_receipts=trace.command_receipts,
+                    tool_calls=trace.tool_calls,
+                    tokens_used=trace.usage.total_tokens,
+                    route=route,
+                    spec=spec,
+                    anchor=anchor,
+                    store=store,
+                    result=result,
+                    debug_dir=debug_dir,
+                    spawned_entity_fsms=spawned_entity_fsms,
+                    required_actions_by_route=required_actions_by_route,
+                    retried_receipt_ids=retried_receipt_ids,
+                )
+                return
 
             branch = trace.result.branch
             if isinstance(branch, HandoffOutput):
@@ -1275,6 +1706,7 @@ class TeamOrchestrator:
             await self._process_artifact(
                 artifact_out=branch,
                 work_dir=work_dir,
+                objective=objective,
                 tokens_used=trace.usage.total_tokens,
                 route=route,
                 spec=spec,
@@ -1611,6 +2043,7 @@ class TeamOrchestrator:
         *,
         artifact_out: ArtifactOutput,
         work_dir: Path,
+        objective: str,
         tokens_used: int,
         route: RouteSummary,
         spec: StateMachineSpec,
@@ -1647,6 +2080,7 @@ class TeamOrchestrator:
             return
 
         digest = hashlib.sha256(content).hexdigest()
+        hex_prev, ascii_prev = _artifact_previews(content)
         attempt_num = len(result.attempts) + 1
         attempts_dir = task_dir / "attempts"
         attempts_dir.mkdir(parents=True, exist_ok=True)
@@ -1662,6 +2096,8 @@ class TeamOrchestrator:
                 status="duplicate",
                 artifact_sha256=digest,
                 artifact_size=len(content),
+                artifact_hex_preview=hex_prev,
+                artifact_ascii_preview=ascii_prev,
                 duplicate=True,
                 causal_dimension=artifact_out.causal_dimension,
                 changed_constraint=artifact_out.changed_constraint,
@@ -1685,6 +2121,99 @@ class TeamOrchestrator:
             )
             return
 
+        # Pre-execution Safe-Path & Causal Qualifier Gate (from cybergym_agent.py)
+        (
+            explicit_safe,
+            align_audit,
+        ) = await self.arbiters.classify_candidate_causal_alignment(
+            {
+                "objective": objective,
+                "rationale": artifact_out.rationale,
+                "claim_binding": artifact_out.claim_binding,
+                "causal_dimension": artifact_out.causal_dimension,
+                "changed_constraint": artifact_out.changed_constraint,
+                "semantic_checkpoint": artifact_out.semantic_checkpoint,
+            }
+        )
+        if align_audit is not None:
+            result.budget.charge(align_audit.usage, model_calls=align_audit.model_calls)
+        if explicit_safe:
+            (
+                sem_no_fault,
+                diag_audit,
+            ) = await self.arbiters.classify_safe_path_diagnostic_consensus(
+                {
+                    "objective": objective,
+                    "rationale": artifact_out.rationale,
+                    "changed_constraint": artifact_out.changed_constraint,
+                }
+            )
+            result.budget.charge(diag_audit.usage, model_calls=diag_audit.model_calls)
+            safe_rec = AttemptRecord(
+                number=attempt_num,
+                route_id=route.route_id,
+                entity_id=route.entity_id,
+                fsm_id=route.fsm_id,
+                state_id=route.current_state_id,
+                status="blocked",
+                block_category="safe_path",
+                artifact_sha256=digest,
+                artifact_size=len(content),
+                artifact_hex_preview=hex_prev,
+                artifact_ascii_preview=ascii_prev,
+                causal_dimension=artifact_out.causal_dimension,
+                changed_constraint=artifact_out.changed_constraint,
+                semantic_checkpoint=artifact_out.semantic_checkpoint,
+                safe_path_diagnostic="semantic_no_fault" if sem_no_fault else None,
+                error="rejected explicit safe/no-fault or missing-qualifier candidate",
+            )
+            result.attempts.append(safe_rec)
+            store.update_route(
+                route.route_id,
+                attempt=attempt_num,
+                outcome="blocked",
+                failure_category="safe_path",
+                failure_summary="Rejected safe/no-fault candidate before execution.",
+                increment_stall=True,
+            )
+            # 2-vote Route Authority consensus after >=2 safe_path blocks on route
+            route_safe_blocks = [
+                a
+                for a in result.attempts
+                if a.route_id == route.route_id and a.block_category == "safe_path"
+            ]
+            if len(route_safe_blocks) >= 2 and self.arbiters._runtime is not None:
+                (
+                    retire,
+                    retire_rat,
+                    auth_audit,
+                ) = await self.arbiters.classify_route_retirement_consensus(
+                    {
+                        "route_id": route.route_id,
+                        "attempts": [a.agent_feedback() for a in route_safe_blocks],
+                    },
+                    valid_attempt_numbers={a.number for a in route_safe_blocks},
+                )
+                result.budget.charge(
+                    auth_audit.usage, model_calls=auth_audit.model_calls
+                )
+                if retire:
+                    store.update_route(
+                        route.route_id,
+                        attempt=attempt_num,
+                        support="contradicted",
+                        failure_category="route_authority_contradicted",
+                        failure_summary=retire_rat[:240],
+                    )
+            self.route_controller.select_route(
+                store,
+                result.attempts,
+                attempt_number=attempt_num + 1,
+                default_fsm_id=spec.fsm_id,
+                default_initial_state=spec.initial_state,
+            )
+            return
+
         seen_artifacts.add(digest)
         initial_rec: ExecutionReceipt | None = None
         replay_rec: ExecutionReceipt | None = None
@@ -1695,6 +2224,14 @@ class TeamOrchestrator:
             initial_rec = await self.evaluator.evaluate_candidate(
                 content, route=route, is_replay=False
             )
+            # Startup retry loop (up to 2 retries on startup noise, from bug_hunter)
+            startup_retries = 0
+            while initial_rec.phase == "environment_startup" and startup_retries < 2:
+                startup_retries += 1
+                initial_rec = await self.evaluator.evaluate_candidate(
+                    content, route=route, is_replay=True
+                )
+
             if initial_rec.exit_code not in (0, 300):
                 replay_rec = await self.evaluator.evaluate_candidate(
                     content, route=route, is_replay=True
@@ -1716,6 +2253,39 @@ class TeamOrchestrator:
             else:
                 status = "submitted"
 
+        # Post-execution semantic duplicate check across matching status attempts
+        sem_dup = False
+        prev_same = next(
+            (
+                a
+                for a in reversed(result.attempts)
+                if a.route_id == route.route_id and a.status == status
+            ),
+            None,
+        )
+        if prev_same is not None:
+            if (
+                prev_same.causal_dimension != "unclassified"
+                and prev_same.causal_dimension == artifact_out.causal_dimension
+                and prev_same.changed_constraint
+                and prev_same.changed_constraint == artifact_out.changed_constraint
+                and prev_same.semantic_checkpoint == artifact_out.semantic_checkpoint
+            ):
+                sem_dup = True
+            else:
+                sem_dup, dup_audit = await self.arbiters.classify_semantic_duplicate(
+                    prev_same.agent_feedback(),
+                    {
+                        "causal_dimension": artifact_out.causal_dimension,
+                        "changed_constraint": artifact_out.changed_constraint,
+                        "semantic_checkpoint": artifact_out.semantic_checkpoint,
+                    },
+                )
+                if dup_audit is not None:
+                    result.budget.charge(
+                        dup_audit.usage, model_calls=dup_audit.model_calls
+                    )
+
         rec = AttemptRecord(
             number=attempt_num,
             route_id=route.route_id,
@@ -1725,14 +2295,22 @@ class TeamOrchestrator:
             status=status,
             artifact_sha256=digest,
             artifact_size=len(content),
+            artifact_hex_preview=hex_prev,
+            artifact_ascii_preview=ascii_prev,
             causal_dimension=artifact_out.causal_dimension,
             changed_constraint=artifact_out.changed_constraint,
             semantic_checkpoint=artifact_out.semantic_checkpoint,
+            semantic_duplicate=sem_dup,
             initial_receipt=initial_rec,
             replay_receipt=replay_rec,
             fingerprint_match=fp_match,
         )
         result.attempts.append(rec)
+
+        # Merge authoritative core.latest-runtime & core.latest-gap into TaskMemory!
+        auth_updates = authoritative_attempt_ledger_updates(rec)
+        if auth_updates:
+            store.merge_ledger(auth_updates)
 
         if status == "milestone_candidate" and not rec.stopped_at_startup():
             result.budget.start_verification_window()
