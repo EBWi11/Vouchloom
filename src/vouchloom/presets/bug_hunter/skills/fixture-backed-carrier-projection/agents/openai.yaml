@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fixture-backed Carrier Projection"
+  short_description: "Project one proven relation through a real fixture"
+  default_prompt: "Use $fixture-backed-carrier-projection to project one source-backed relation through a real fixture into the bound raw carrier."

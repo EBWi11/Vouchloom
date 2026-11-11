@@ -1,0 +1,4 @@
+interface:
+  display_name: "Exact Source-backed Byte Builder"
+  short_description: "Assemble or patch one source-proven raw carrier"
+  default_prompt: "Use $source-backed-byte-construction to assemble or patch the exact source-proven raw-input carrier."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "C/C++ Targeted Static Check"
+  short_description: "Check one bound C/C++ source property"
+  default_prompt: "Use $c-cpp-targeted-static-triage to check one named initialization, bounds, or lifetime uncertainty on the bound harness route."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "FFmpeg Decoder Native Search"
+  short_description: "Bounded native search for decoder carriers"
+  default_prompt: "Use $ffmpeg-target-dec-native-search to run one bounded original-target search for a missing-slice decoder carrier."

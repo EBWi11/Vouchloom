@@ -1,0 +1,73 @@
+schema_version: vouchloom-fsm-spec/1.0
+fsm_id: bug-hunter-graphicsmagick-search
+version: 0.14.0
+description: >-
+  Fail-closed GraphicsMagick same-coder and JNX nested-coder native search
+  Micro-FSM migrated from bug_hunter commits 0060f0b & 5cbc205.
+trigger:
+  entity_kind: fuzz_target
+  required_attributes:
+    project: graphicsmagick
+  attribute_regex:
+    target: "^coder_[A-Za-z0-9_]+_fuzzer$"
+initial_state: coder_dispatch_gate
+states:
+  - id: coder_dispatch_gate
+    title: GraphicsMagick Same-Coder vs Nested-Dispatch Gate
+    mode: research
+    agent_stage: runtime
+    allowed_skills:
+      - graphicsmagick-coder-native-search
+    max_total_tokens: 600000
+    max_output_tokens: 8192
+    max_turn_seconds: 600
+    system_prompt: |
+      Execute one finite original-target coder_*_fuzzer search using the
+      current-run accepted carrier after an authoritative clean execution and a
+      runtime-observed task sink. Reject sibling coders and external corpora.
+
+  - id: jnx_nested_coder_search
+    title: GraphicsMagick ExtractTileJPG -> BlobToImage Nested Search
+    mode: research
+    agent_stage: runtime
+    allowed_skills:
+      - graphicsmagick-nested-coder-search
+    max_total_tokens: 600000
+    max_output_tokens: 8192
+    max_turn_seconds: 600
+    system_prompt: |
+      Execute one bounded unchanged coder_JNX_fuzzer search preserving the
+      ExtractTileJPG -> BlobToImage nested dispatch. Reject direct nested coder
+      binaries or custom mutators.
+
+  - id: gm_search_done
+    title: GraphicsMagick Native Search Closed
+    mode: research
+    is_terminal: true
+    system_prompt: Terminal state.
+
+transitions:
+  - id: enter_jnx_nested_search
+    source: coder_dispatch_gate
+    target: jnx_nested_coder_search
+    priority: 100
+    guard:
+      entity_attribute_equals:
+        target: coder_JNX_fuzzer
+      python_guard: bug_hunter.gm_nested_coder_ready
+
+  - id: finish_same_coder_search
+    source: coder_dispatch_gate
+    target: gm_search_done
+    priority: 50
+    guard:
+      required_sections: [checkpoint]
+      min_status: runtime_observed
+
+  - id: finish_nested_coder_search
+    source: jnx_nested_coder_search
+    target: gm_search_done
+    priority: 50
+    guard:
+      required_sections: [checkpoint]
+      min_status: runtime_observed

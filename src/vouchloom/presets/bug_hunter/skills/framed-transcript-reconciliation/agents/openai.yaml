@@ -1,0 +1,4 @@
+interface:
+  display_name: "Framed Transcript Reconciliation"
+  short_description: "Reconcile framed carriers with runtime events"
+  default_prompt: "Use $framed-transcript-reconciliation to decode one framed carrier and reconcile its byte spans with one bound runtime event sequence."

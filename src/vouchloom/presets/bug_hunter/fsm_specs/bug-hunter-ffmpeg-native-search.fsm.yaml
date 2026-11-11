@@ -1,0 +1,74 @@
+schema_version: vouchloom-fsm-spec/1.0
+fsm_id: bug-hunter-ffmpeg-native-search
+version: 0.14.0
+description: >-
+  Fail-closed FFmpeg target_dec_fuzzer and target_dem_fuzzer native libFuzzer
+  search Micro-FSM migrated from bug_hunter commits 4fd96a7 & 1b2a1f3. Admitted
+  only after an authoritative clean execution on an exact codec/demux target
+  with an accepted same-format carrier and explicit UUV/missing-slice contract.
+trigger:
+  entity_kind: fuzz_target
+  required_attributes:
+    project: ffmpeg
+  attribute_regex:
+    target: "^ffmpeg_(?:AV_CODEC_ID_[A-Za-z0-9_]+|dem_[A-Za-z0-9_]+)_fuzzer$"
+initial_state: decoder_native_search
+states:
+  - id: decoder_native_search
+    title: Bounded Original-Target FFmpeg Decoder Search
+    mode: research
+    agent_stage: runtime
+    allowed_skills:
+      - ffmpeg-target-dec-native-search
+    max_total_tokens: 600000
+    max_output_tokens: 8192
+    max_turn_seconds: 600
+    system_prompt: |
+      Run one finite original-target libFuzzer search on the unchanged
+      ffmpeg_AV_CODEC_ID_*_fuzzer using only the accepted same-codec seed.
+      Reject altered drivers, cross-codec corpora, and unrelated crashes.
+
+  - id: demux_native_search
+    title: Bounded Original-Target FFmpeg Demuxer Search
+    mode: research
+    agent_stage: runtime
+    allowed_skills:
+      - ffmpeg-demux-native-search
+    max_total_tokens: 600000
+    max_output_tokens: 8192
+    max_turn_seconds: 600
+    system_prompt: |
+      Run one finite unchanged ffmpeg_dem_*_fuzzer search over the accepted
+      same-format carrier. Preserve nested packet-probe routes rooted in the
+      outer demuxer while rejecting direct sibling fuzzer substitution.
+
+  - id: search_complete
+    title: FFmpeg Native Search Closed
+    mode: research
+    is_terminal: true
+    system_prompt: Terminal state.
+
+transitions:
+  - id: route_to_demux_search
+    source: decoder_native_search
+    target: demux_native_search
+    priority: 100
+    description: Switch to per-demuxer native search when target is ffmpeg_dem_*.
+    guard:
+      python_guard: bug_hunter.ffmpeg_demux_search_ready
+
+  - id: close_decoder_search
+    source: decoder_native_search
+    target: search_complete
+    priority: 50
+    guard:
+      required_sections: [checkpoint]
+      min_status: runtime_observed
+
+  - id: close_demux_search
+    source: demux_native_search
+    target: search_complete
+    priority: 50
+    guard:
+      required_sections: [checkpoint]
+      min_status: runtime_observed

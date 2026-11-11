@@ -1,0 +1,4 @@
+interface:
+  display_name: "libxaac Native MSan Search"
+  short_description: "Bound one original libxaac fuzzer search"
+  default_prompt: "Use the bound original libxaac fuzzer and current accepted seed for one finite MSan-guided search."

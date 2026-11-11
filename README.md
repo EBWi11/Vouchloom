@@ -293,6 +293,9 @@ src/vouchloom/
   arbiters.py        # Isolated 0-tool SemanticArbiterSuite & 2-of-2 consensus gates
   team.py            # SupervisorScheduler, DeterministicRouteController, TwoTierObserver
   evolution.py       # EdgeCreditLedger, BanditRouter, GraphPatch, ShadowReplay, MetaAgent
+  presets/
+    bug_hunter.py    # Preset loader, handbook selector, & bug_hunter.* guard plugins
+    bug_hunter/      # Standalone migrated bug_hunter FSM YAMLs, handbook, 16 skills & helpers
 tests/               # Full invariant, runtime, arbiter, team, breakout, and RL replay suite
 ```
 

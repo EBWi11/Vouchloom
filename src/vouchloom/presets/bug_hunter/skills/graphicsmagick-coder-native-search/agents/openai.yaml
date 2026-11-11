@@ -1,0 +1,4 @@
+interface:
+  display_name: "GraphicsMagick Coder Native Search"
+  short_description: "Bounded exact-coder sanitizer search"
+  default_prompt: "Use $graphicsmagick-coder-native-search to search one established GraphicsMagick coder route on its unchanged target."

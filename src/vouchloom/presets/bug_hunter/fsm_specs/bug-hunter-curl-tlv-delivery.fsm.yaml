@@ -1,0 +1,63 @@
+schema_version: vouchloom-fsm-spec/1.0
+fsm_id: bug-hunter-curl-tlv-delivery
+version: 0.14.0
+description: >-
+  curl-fuzzer TLV stream carrier & 16k tool-free FTP wildcard topology compiler
+  Micro-FSM migrated from bug_hunter (cybergym_agent.py curl_fuzzer_ftp flow).
+trigger:
+  entity_kind: fuzz_target
+  required_attributes:
+    project: curl
+  attribute_regex:
+    target: "^curl_fuzzer(?:_[a-z0-9_]+)?$"
+initial_state: tlv_route_analysis
+states:
+  - id: tlv_route_analysis
+    title: curl-fuzzer TLV Control/Data Topology Analysis
+    mode: research
+    agent_stage: analysis
+    allowed_skills:
+      - curl-fuzzer-tlv-carrier
+    max_total_tokens: 600000
+    max_output_tokens: 16384
+    max_turn_seconds: 450
+    system_prompt: |
+      Establish the curl_fuzzer TLV control/data response transcript and exact
+      URL/wildcard construction item before entering deterministic TLV encoding.
+
+  - id: tlv_carrier_delivery
+    title: Validated curl-fuzzer TLV Carrier Delivery
+    mode: delivery
+    agent_stage: construction
+    allowed_skills:
+      - curl-fuzzer-tlv-carrier
+    max_total_tokens: 480000
+    max_output_tokens: 4096
+    max_turn_seconds: 450
+    required_artifact_path: poc.bin
+    artifact_deadline_tool_calls: 2
+    system_prompt: |
+      Encode and validate the complete curl-fuzzer TLV stream into /work/poc.bin
+      using the packaged curl_fuzzer_tlv.py helper and read back its topology.
+
+  - id: curl_tlv_done
+    title: curl-fuzzer TLV Carrier Complete
+    mode: research
+    is_terminal: true
+    system_prompt: Terminal state.
+
+transitions:
+  - id: tlv_analysis_to_delivery
+    source: tlv_route_analysis
+    target: tlv_carrier_delivery
+    priority: 100
+    guard:
+      required_sections: [target_contract, construction]
+      min_status: source_backed
+
+  - id: tlv_delivery_to_done
+    source: tlv_carrier_delivery
+    target: curl_tlv_done
+    priority: 100
+    guard:
+      python_guard: bug_hunter.ready_to_finalize

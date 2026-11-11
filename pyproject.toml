@@ -30,6 +30,12 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vouchloom"]
+artifacts = [
+  "src/vouchloom/presets/bug_hunter/fsm_specs/*.yaml",
+  "src/vouchloom/presets/bug_hunter/handbook_data/*.yaml",
+  "src/vouchloom/presets/bug_hunter/skills/**/*",
+  "src/vouchloom/presets/bug_hunter/sandbox_helpers/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Libxml2 API Bytecode Carrier"
+  short_description: "Encode one source-derived libxml2 API program"
+  default_prompt: "Use $libxml2-api-bytecode-carrier to encode and roundtrip one source-derived libxml2 API carrier."

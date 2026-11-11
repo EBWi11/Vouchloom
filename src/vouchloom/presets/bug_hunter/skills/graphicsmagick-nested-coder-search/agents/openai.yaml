@@ -1,0 +1,4 @@
+interface:
+  display_name: "GraphicsMagick Nested Coder Search"
+  short_description: "Bound one accepted nested image decoder route"
+  default_prompt: "Use $graphicsmagick-nested-coder-search to search one already-proved nested coder route with the original target."

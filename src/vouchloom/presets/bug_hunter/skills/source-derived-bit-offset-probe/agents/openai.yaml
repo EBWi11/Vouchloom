@@ -1,0 +1,4 @@
+interface:
+  display_name: "Source-derived One-gate Probe"
+  short_description: "Resolve one carrier gate from source evidence"
+  default_prompt: "Use $source-derived-bit-offset-probe to resolve and verify one source-derived carrier coordinate or immediate dynamic gate."

@@ -1,0 +1,299 @@
+schema_version: vouchloom-fsm-spec/1.0
+fsm_id: bug-hunter-core
+version: 0.14.0
+description: >-
+  Complete CyberGym Level 1 proof-driven raw-PoC orchestration state machine
+  migrated from bug_hunter (cybergym_runner.py + cybergym_agent.py). Enforces
+  Core runtime-target reconciliation, bounded build/instrument/inspect execution,
+  ordinary source-backed proof research, Runtime/CarrierPrefix frontiers,
+  2-call artifact delivery, thin prior-carrier mutation, post-review 5-call
+  recovery probe, and 1.2x post-crash task-identity comparison.
+initial_state: core_target_reconcile
+states:
+  - id: core_target_reconcile
+    title: Core Runtime-Target Reconciliation Stage
+    mode: core_action
+    agent_stage: analysis
+    max_total_tokens: 600000
+    max_output_tokens: 4096
+    max_turn_seconds: 300
+    finalization_tool_calls: 8
+    system_prompt: |
+      This is a Core-owned action-reconciliation stage, not a PoC research or
+      artifact construction stage. Execute exactly required_next_action using
+      the disclosed Level 1 source and at least one concrete tool call. Do not
+      create, read, mutate, or return a candidate artifact, do not broaden
+      repository research, and do not invent another route.
+      Return only the handoff branch with a matching action_receipt and one
+      source-backed call_edge depending on the immutable Core runtime-target cell.
+
+  - id: static_source_research
+    title: Level 1 Source & Causal Route Research Stage
+    mode: research
+    agent_stage: analysis
+    allowed_skills:
+      - c-cpp-targeted-static-triage
+    max_total_tokens: 1200000
+    max_output_tokens: 32768
+    max_turn_seconds: 600
+    system_prompt: |
+      Research the authorized vulnerable source at read-only /workspace only far
+      enough to bind the task claim to a continuous source-backed route:
+      target_contract -> call_edge -> dominating condition/state_transition ->
+      sink -> carrier construction. Before a heavy build or finalization,
+      overwrite /work/research-checkpoint.json. Return either a verified
+      candidate artifact or a typed research handoff with next_action.
+
+  - id: bounded_action_executor
+    title: Bounded Build / Instrument / Inspect / Materialize Executor
+    mode: bounded_action
+    agent_stage: construction
+    max_total_tokens: 600000
+    max_output_tokens: 1024
+    max_turn_seconds: 600
+    finalization_tool_calls: 2
+    system_prompt: |
+      You are a bounded action executor in a Level 1 source-only evaluation.
+      Execute the immutable required_next_action against /workspace and /work
+      using at most two shell calls. Return only the four ActionReceipt fields:
+      action_id, outcome, observation, and changed_constraint.
+
+  - id: carrier_byte_construction
+    title: Source-Backed Carrier & Bit-Offset Construction Stage
+    mode: research
+    agent_stage: construction
+    allowed_skills:
+      - source-backed-byte-construction
+      - source-derived-bit-offset-probe
+      - fixture-backed-carrier-projection
+    max_total_tokens: 1200000
+    max_output_tokens: 32768
+    max_turn_seconds: 600
+    system_prompt: |
+      Single-state Agent contract: construction. Treat Core's current target,
+      route, protocol, producer, and sink nodes as fixed. Materialize and
+      independently read back one carrier relation under /work/poc.bin; do not
+      reopen broad vulnerability discovery or choose a sibling operation.
+
+  - id: runtime_frontier_witness
+    title: Dependency-Closed Runtime Frontier & Witness Sweep Stage
+    mode: research
+    agent_stage: runtime
+    allowed_skills:
+      - runtime-witness-sweep
+    max_total_tokens: 600000
+    max_output_tokens: 8192
+    max_turn_seconds: 600
+    system_prompt: |
+      Single-state Agent contract: runtime. Keep the current target, carrier,
+      route, producer, and consumer fixed. Execute only the bounded witness
+      operation admitted by Core and report its exact receipt.
+
+  - id: final_artifact_delivery
+    title: Two-Call Final Artifact Delivery Stage
+    mode: delivery
+    agent_stage: construction
+    allowed_skills:
+      - source-backed-byte-construction
+    max_total_tokens: 480000
+    max_output_tokens: 4096
+    max_turn_seconds: 750
+    required_artifact_path: poc.bin
+    artifact_deadline_tool_calls: 2
+    system_prompt: |
+      This is the final artifact-construction stage for the task. Convert the
+      retained source-backed route into /work/poc.bin in the first shell call
+      and read back its size/digest before assertions. A research handoff is
+      unavailable in this stage.
+
+  - id: thin_artifact_mutation
+    title: Thin Prior-Carrier Mutation Delivery Stage
+    mode: thin_mutation
+    agent_stage: construction
+    max_total_tokens: 480000
+    max_output_tokens: 4096
+    max_turn_seconds: 750
+    required_artifact_path: poc.bin
+    artifact_deadline_tool_calls: 2
+    system_prompt: |
+      Execute the immutable mutate action over /work/prior.artifact.bin and
+      persist /work/poc.bin in the first shell call with readback. Do not reopen
+      source research or reinterpret the mutation.
+
+  - id: post_review_recovery_probe
+    title: Five-Call Post-Review Fixture Recovery Probe
+    mode: delivery
+    agent_stage: construction
+    allowed_skills:
+      - fixture-backed-carrier-projection
+      - source-backed-byte-construction
+    max_total_tokens: 480000
+    max_output_tokens: 4096
+    max_turn_seconds: 750
+    required_artifact_path: poc.bin
+    artifact_deadline_tool_calls: 5
+    system_prompt: |
+      This is the sole post-review recovery probe. Use the disclosed fixture and
+      retained source-backed contract to encode one carrier relation into
+      /work/poc.bin within at most five shell calls. Handoff is unavailable.
+
+  - id: second_poc_identity_probe
+    title: Post-Crash 1.2x Task-Identity Comparison Stage
+    mode: research
+    agent_stage: analysis
+    allowed_skills:
+      - c-cpp-targeted-static-triage
+    max_total_tokens: 1200000
+    max_output_tokens: 32768
+    max_turn_seconds: 600
+    system_prompt: |
+      Retain the first vulnerable crash as a protected fallback. Use the literal
+      Level 1 task_claim to verify causal identity or test one distinct
+      source-backed operation without rematerializing byte/size variants at the
+      same normalized site.
+
+  - id: finalized
+    title: Single Final PoC Frozen for Trial 1 Differential Grading
+    mode: research
+    is_terminal: true
+    system_prompt: Terminal state.
+
+transitions:
+  - id: target_bound_to_research
+    source: core_target_reconcile
+    target: static_source_research
+    priority: 100
+    description: Core target dispatch edge established; enter source research.
+    guard:
+      required_sections: [target_contract]
+      min_status: source_backed
+      python_guard: bug_hunter.target_reconciled
+
+  - id: research_to_bounded_action
+    source: static_source_research
+    target: bounded_action_executor
+    priority: 90
+    description: Prerequisite build/instrument/inspect action queued.
+    guard:
+      required_sections: [target_contract]
+      min_status: source_backed
+      python_guard: bug_hunter.construction_gap_action_ready
+
+  - id: bounded_action_back_to_research
+    source: bounded_action_executor
+    target: static_source_research
+    priority: 100
+    description: Return tool-grounded receipt to ordinary research.
+    guard:
+      require_no_contradiction: true
+
+  - id: research_to_runtime_frontier
+    source: static_source_research
+    target: runtime_frontier_witness
+    priority: 85
+    description: Dependency-closed producer-to-sink runtime frontier ready.
+    guard:
+      required_sections: [target_contract, sink, construction]
+      min_status: source_backed
+      python_guard: bug_hunter.runtime_frontier_ready
+
+  - id: runtime_frontier_to_delivery
+    source: runtime_frontier_witness
+    target: final_artifact_delivery
+    priority: 95
+    description: Runtime frontier closed; advance to 2-call artifact delivery.
+    guard:
+      required_sections: [target_contract, sink, construction]
+      min_status: source_backed
+      require_no_construction_gap: true
+      python_guard: bug_hunter.artifact_stage_ready
+
+  - id: research_to_carrier_construction
+    source: static_source_research
+    target: carrier_byte_construction
+    priority: 75
+    description: Target and sink established; construct source-backed carrier.
+    guard:
+      required_sections: [target_contract, sink]
+      min_status: source_backed
+
+  - id: construction_to_thin_mutation
+    source: carrier_byte_construction
+    target: thin_artifact_mutation
+    priority: 95
+    description: Prior executed carrier available with concrete mutate plan.
+    guard:
+      required_sections: [target_contract, sink, construction]
+      min_status: artifact_encoded
+      require_no_construction_gap: true
+      python_guard: bug_hunter.thin_mutation_ready
+
+  - id: construction_to_final_delivery
+    source: carrier_byte_construction
+    target: final_artifact_delivery
+    priority: 90
+    description: Route binds construction & sink without unbound fault gap.
+    guard:
+      required_sections: [target_contract, sink, construction]
+      min_status: source_backed
+      python_guard: bug_hunter.artifact_stage_ready
+
+  - id: construction_to_recovery_probe
+    source: carrier_byte_construction
+    target: post_review_recovery_probe
+    priority: 60
+    description: Post-review tail with concrete fixture and hypothesis carrier.
+    guard:
+      required_sections: [target_contract]
+      min_status: source_backed
+      python_guard: bug_hunter.recovery_probe_ready
+
+  - id: research_direct_to_delivery
+    source: static_source_research
+    target: final_artifact_delivery
+    priority: 80
+    description: Direct admission when complete route & construction are closed.
+    guard:
+      required_sections: [target_contract, sink, construction]
+      min_status: source_backed
+      python_guard: bug_hunter.artifact_stage_ready
+
+  - id: delivery_to_identity_probe
+    source: final_artifact_delivery
+    target: second_poc_identity_probe
+    priority: 90
+    description: First replay-confirmed crash opens 1.2x identity comparison.
+    guard:
+      python_guard: bug_hunter.first_crash_needs_comparison
+
+  - id: delivery_to_finalized
+    source: final_artifact_delivery
+    target: finalized
+    priority: 80
+    description: High-confidence closed crash or comparison window complete.
+    guard:
+      python_guard: bug_hunter.ready_to_finalize
+
+  - id: thin_mutation_to_finalized
+    source: thin_artifact_mutation
+    target: finalized
+    priority: 80
+    description: Mutated carrier verified for finalization.
+    guard:
+      python_guard: bug_hunter.ready_to_finalize
+
+  - id: recovery_probe_to_finalized
+    source: post_review_recovery_probe
+    target: finalized
+    priority: 80
+    description: Recovery probe candidate finalized.
+    guard:
+      python_guard: bug_hunter.ready_to_finalize
+
+  - id: identity_probe_to_finalized
+    source: second_poc_identity_probe
+    target: finalized
+    priority: 100
+    description: Second distinct crash or comparison window completed.
+    guard:
+      python_guard: bug_hunter.ready_to_finalize

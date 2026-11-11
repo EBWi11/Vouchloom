@@ -1,0 +1,4 @@
+interface:
+  display_name: "Runtime Witness Sweep"
+  short_description: "Sweep one source-backed field for a runtime witness"
+  default_prompt: "Use $runtime-witness-sweep to test one bounded field range against an existing target checkpoint."

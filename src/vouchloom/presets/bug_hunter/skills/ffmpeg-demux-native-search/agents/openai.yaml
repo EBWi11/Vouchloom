@@ -1,0 +1,4 @@
+interface:
+  display_name: "FFmpeg Demux Native Search"
+  short_description: "Bounded native search for demux carriers"
+  default_prompt: "Use $ffmpeg-demux-native-search to run one bounded original-target search for an accepted per-demuxer carrier."

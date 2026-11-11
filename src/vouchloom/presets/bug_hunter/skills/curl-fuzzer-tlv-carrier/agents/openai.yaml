@@ -1,0 +1,4 @@
+interface:
+  display_name: "Curl Fuzzer TLV Carrier"
+  short_description: "Materialize TLV carriers and validate FTP topology"
+  default_prompt: "Use $curl-fuzzer-tlv-carrier to deterministically build and verify a public curl-fuzzer TLV testcase and, for FTP, validate the complete control/data response topology."

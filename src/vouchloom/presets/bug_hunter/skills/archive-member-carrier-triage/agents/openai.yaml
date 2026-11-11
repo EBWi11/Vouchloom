@@ -1,0 +1,4 @@
+interface:
+  display_name: "Exact ZIP Carrier Resolver"
+  short_description: "Resolve one bound ZIP-versus-member mismatch"
+  default_prompt: "Use $archive-member-carrier-triage to resolve the known whole-ZIP-versus-member mismatch for the bound harness."

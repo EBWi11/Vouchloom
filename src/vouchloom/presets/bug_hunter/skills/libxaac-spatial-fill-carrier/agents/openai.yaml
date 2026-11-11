@@ -1,0 +1,4 @@
+interface:
+  display_name: "Libxaac Spatial Fill Carrier"
+  short_description: "Encode one source-proven AAC spatial fill carrier"
+  default_prompt: "Use $libxaac-spatial-fill-carrier to encode and roundtrip one source-proven AAC spatial fill carrier."

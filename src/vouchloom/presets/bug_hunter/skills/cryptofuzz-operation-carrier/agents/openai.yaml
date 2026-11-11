@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cryptofuzz Operation Carrier"
+  short_description: "Build and inspect Cryptofuzz operation envelopes"
+  default_prompt: "Use $cryptofuzz-operation-carrier to construct and verify a public Cryptofuzz operation carrier."

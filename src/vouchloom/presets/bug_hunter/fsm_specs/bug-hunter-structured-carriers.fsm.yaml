@@ -1,0 +1,79 @@
+schema_version: vouchloom-fsm-spec/1.0
+fsm_id: bug-hunter-structured-carriers
+version: 0.14.0
+description: >-
+  Source-defined structured carrier encoders & archive/transcript reconcilers
+  migrated from bug_hunter (libxaac spatial/MSan, libxml2 API bytecode,
+  Cryptofuzz operation envelopes, OpenSC framed transcripts, and ZIP member
+  reconciliation).
+trigger:
+  entity_kind: fuzz_target
+  attribute_regex:
+    project: "^(?:libxaac|libxml2|cryptofuzz|opensc|zip_carrier)$"
+initial_state: select_carrier_workflow
+states:
+  - id: select_carrier_workflow
+    title: Bind Source-Defined Protocol & Carrier Encoder
+    mode: research
+    agent_stage: construction
+    allowed_skills:
+      - libxml2-api-bytecode-carrier
+      - libxaac-spatial-fill-carrier
+      - cryptofuzz-operation-carrier
+      - archive-member-carrier-triage
+      - framed-transcript-reconciliation
+      - source-backed-byte-construction
+    max_total_tokens: 900000
+    max_output_tokens: 16384
+    max_turn_seconds: 600
+    system_prompt: |
+      Encode the exact source-defined operation bytecode, spatial-fill frame,
+      Cryptofuzz envelope, framed APDU transcript, or ZIP member table under
+      /work/poc.bin and verify every offset/length via deterministic readback.
+
+  - id: libxaac_msan_native_search
+    title: Fail-Closed libxaac Encoder MSan Native Search
+    mode: research
+    agent_stage: runtime
+    allowed_skills:
+      - libxaac-native-msan-search
+    max_total_tokens: 600000
+    max_output_tokens: 8192
+    max_turn_seconds: 600
+    system_prompt: |
+      After an authoritative clean run on xaac_enc_fuzzer with a runtime-observed
+      sink and UUV contract, run one bounded original-target MSan search.
+
+  - id: carrier_workflow_done
+    title: Structured Carrier Workflow Complete
+    mode: research
+    is_terminal: true
+    system_prompt: Terminal state.
+
+transitions:
+  - id: escalate_to_libxaac_msan_search
+    source: select_carrier_workflow
+    target: libxaac_msan_native_search
+    priority: 100
+    guard:
+      entity_attribute_equals:
+        project: libxaac
+        target: xaac_enc_fuzzer
+      required_sections: [sink, construction]
+      min_status: runtime_observed
+
+  - id: close_carrier_workflow
+    source: select_carrier_workflow
+    target: carrier_workflow_done
+    priority: 50
+    guard:
+      required_sections: [construction]
+      min_status: artifact_encoded
+
+  - id: close_libxaac_search
+    source: libxaac_msan_native_search
+    target: carrier_workflow_done
+    priority: 50
+    guard:
+      required_sections: [checkpoint]
+      min_status: runtime_observed
