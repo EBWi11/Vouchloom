@@ -239,7 +239,7 @@ def write_task_audit_bundle(
     task_id: str,
     outcome_label: str,
     state_payload: dict[str, Any],
-    blackboard_path: Path | None = None,
+    memory_path: Path | None = None,
     artifacts: dict[str, bytes] | None = None,
 ) -> Path:
     """Atomically write a deterministic ZIP + .sha256 sidecar for a task run."""
@@ -252,8 +252,8 @@ def write_task_audit_bundle(
     entries: dict[str, bytes] = {
         "state/task-run.json": _json_bytes(state_payload),
     }
-    if blackboard_path is not None and blackboard_path.is_file():
-        entries["state/blackboard.json"] = blackboard_path.read_bytes()
+    if memory_path is not None and memory_path.is_file():
+        entries["state/memory.json"] = memory_path.read_bytes()
 
     if artifacts:
         for rel_name, raw in sorted(artifacts.items()):

@@ -1,6 +1,6 @@
 """Cryptographic execution, command, action, and sideband-signal receipts.
 
-Core rule inherited from bug_hunter: no state transition, blackboard fact, or
+Core rule inherited from bug_hunter: no state transition, durable memory item, or
 observer breakout signal is trusted without an integrity-bound receipt.
 """
 

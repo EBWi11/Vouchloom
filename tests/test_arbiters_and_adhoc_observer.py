@@ -10,7 +10,6 @@ import pytest
 
 from vouchloom import (
     AgentRuntimeError,
-    BlackboardStore,
     CommandReceipt,
     ManagedAgentRuntime,
     MemoryItem,
@@ -23,6 +22,7 @@ from vouchloom import (
     StateMachineRegistry,
     StateMachineSpec,
     StateNodeSpec,
+    TaskMemoryStore,
     TransitionSpec,
     TwoTierObserver,
 )
@@ -239,7 +239,7 @@ async def test_semantic_arbiters_fail_open_fail_closed_and_2_vote_consensus() ->
 async def test_observer_tier2_adhoc_fsm_mount_and_oversized_downgrade(
     tmp_path: Path,
 ) -> None:
-    store = BlackboardStore(tmp_path / "bb.json", "obs-task")
+    store = TaskMemoryStore(tmp_path / "bb.json", "obs-task")
     route = store.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="Start", model="core"
     )

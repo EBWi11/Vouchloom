@@ -9,10 +9,10 @@ from typing import Any, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
-from vouchloom.blackboard import (
-    BlackboardSnapshot,
+from vouchloom.memory import (
     ConditionRole,
     ProofStatus,
+    TaskMemorySnapshot,
     ledger_gap_blocks_construction,
     select_active_ledger_gap,
 )
@@ -215,7 +215,7 @@ def build_capability_plan(
 def project_proof_graph(
     *,
     anchor_evidence: dict[str, Any],
-    snapshot: BlackboardSnapshot | None,
+    snapshot: TaskMemorySnapshot | None,
     active_route_id: str | None,
     execution_receipts: list[ExecutionReceipt],
 ) -> ProofGraph:
@@ -318,7 +318,7 @@ def project_proof_graph(
 
 
 def delivery_stage_ready(
-    snapshot: BlackboardSnapshot | None,
+    snapshot: TaskMemorySnapshot | None,
     active_route_id: str | None,
     anchor_evidence: dict[str, Any],
     *,

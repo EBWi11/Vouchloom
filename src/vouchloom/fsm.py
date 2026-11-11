@@ -14,12 +14,12 @@ from typing import Any, Literal, Self
 import yaml
 from pydantic import Field, model_validator
 
-from vouchloom.blackboard import (
+from vouchloom.memory import (
     LEDGER_STATUS_PRIORITY,
-    Blackboard,
-    BlackboardEntity,
     ProofSection,
     ProofStatus,
+    TaskMemory,
+    TaskMemoryEntity,
     ledger_gap_blocks_construction,
 )
 from vouchloom.models import StrictModel
@@ -36,7 +36,7 @@ StateExecutionMode = Literal[
     "exploratory_probe",
 ]
 
-GuardCallable = Callable[[Blackboard, str, dict[str, Any]], bool]
+GuardCallable = Callable[[TaskMemory, str, dict[str, Any]], bool]
 
 
 class GuardRegistry:
@@ -58,13 +58,13 @@ class GuardRegistry:
 
 
 class TriggerPredicate(StrictModel):
-    """Declarative trigger mounting a Micro-FSM onto matching BlackboardEntities."""
+    """Declarative trigger mounting a Micro-FSM onto matching TaskMemoryEntities."""
 
     entity_kind: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     required_attributes: dict[str, str] = Field(default_factory=dict)
     attribute_regex: dict[str, str] = Field(default_factory=dict)
 
-    def matches(self, entity: BlackboardEntity) -> bool:
+    def matches(self, entity: TaskMemoryEntity) -> bool:
         if entity.kind != self.entity_kind:
             return False
         for key, expected in self.required_attributes.items():
@@ -93,7 +93,7 @@ class GuardClause(StrictModel):
 
     def evaluate_deterministic(
         self,
-        board: Blackboard,
+        board: TaskMemory,
         route_id: str,
         *,
         context: dict[str, Any] | None = None,
@@ -303,7 +303,7 @@ class StateMachineRegistry:
         return [self._specs[k] for k in sorted(self._specs)]
 
     def matching_specs_for_entity(
-        self, entity: BlackboardEntity
+        self, entity: TaskMemoryEntity
     ) -> list[StateMachineSpec]:
         return [
             spec

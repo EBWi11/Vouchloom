@@ -1,4 +1,4 @@
-"""Persistent Entity-Fact Blackboard & 10+1 Proof Ledger (from bug_hunter).
+"""Persistent, proof-oriented TaskMemory & 10+1 Proof Ledger (from bug_hunter).
 
 Preserves every battle-tested invariant from bug_hunter's TaskMemory v5:
 - Per-route 10-cell proof cap + 1 reserved Core runtime-target identity slot
@@ -26,7 +26,7 @@ from pydantic import Field, field_validator, model_validator
 
 from vouchloom.models import CausalDimension, StrictModel
 
-BLACKBOARD_SCHEMA_VERSION = "vouchloom-blackboard/1.0"
+MEMORY_SCHEMA_VERSION = "vouchloom-task-memory/1.0"
 MAX_PROMPT_MEMORY_CHARS = 32_000
 MAX_ROUTE_LEDGER_ENTRIES = 10
 AGENT_MEMORY_VIEW_VERSION = 2
@@ -88,7 +88,7 @@ ConditionRole = Literal[
 ]
 
 
-class BlackboardEntity(StrictModel):
+class TaskMemoryEntity(StrictModel):
     """One discovered domain object supporting 1 -> N dynamic task fission.
 
     Root entities may be seeded by Core; any Worker-discovered child entity MUST
@@ -214,7 +214,7 @@ class CarrierPrefixFrontier:
     spine_keys: tuple[str, ...]
 
 
-class BlackboardConclusion(StrictModel):
+class TaskMemoryConclusion(StrictModel):
     """One bounded conclusion derived from task-visible evidence."""
 
     key: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,79}$")
@@ -258,7 +258,7 @@ class BlackboardConclusion(StrictModel):
         return self
 
 
-def conclusion_rejection_reason(conclusion: BlackboardConclusion) -> str | None:
+def conclusion_rejection_reason(conclusion: TaskMemoryConclusion) -> str | None:
     """Reject activity logs, reserved summary keys, and raw hex byte blobs."""
 
     if conclusion.key.startswith("memory-summary-"):
@@ -643,22 +643,22 @@ class RouteSummary(StrictModel):
     updated_attempt: int = Field(default=0, ge=0)
 
 
-class BlackboardSnapshot(StrictModel):
+class TaskMemorySnapshot(StrictModel):
     """Bounded prompt projection (<=32,000 chars) permitted in a Worker request."""
 
-    schema_version: Literal["vouchloom-blackboard/1.0"] = BLACKBOARD_SCHEMA_VERSION
+    schema_version: Literal["vouchloom-task-memory/1.0"] = MEMORY_SCHEMA_VERSION
     task_id: str = Field(min_length=1, max_length=500)
-    entities: list[BlackboardEntity] = Field(default_factory=list)
-    common: list[BlackboardConclusion] = Field(default_factory=list)
+    entities: list[TaskMemoryEntity] = Field(default_factory=list)
+    common: list[TaskMemoryConclusion] = Field(default_factory=list)
     route_summaries: list[RouteSummary] = Field(default_factory=list)
     route_decision: RouteDecisionMemory | None = None
-    visible_route_conclusions: list[BlackboardConclusion] = Field(default_factory=list)
+    visible_route_conclusions: list[TaskMemoryConclusion] = Field(default_factory=list)
     proof_ledger: list[ProofLedgerEntry] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_bounded_snapshot(self) -> Self:
         if len(self.model_dump_json()) > MAX_PROMPT_MEMORY_CHARS:
-            raise ValueError("blackboard prompt snapshot exceeds 32,000 characters")
+            raise ValueError("task memory prompt snapshot exceeds 32,000 characters")
         ledger_keys = [(item.route_id, item.key) for item in self.proof_ledger]
         if len(ledger_keys) != len(set(ledger_keys)):
             raise ValueError("prompt proof ledger keys must be unique")
@@ -781,13 +781,13 @@ class BlackboardSnapshot(StrictModel):
 
 
 def dependency_closed_runtime_frontier(
-    snapshot: BlackboardSnapshot | dict[str, Any],
+    snapshot: TaskMemorySnapshot | dict[str, Any],
     route_id: str,
 ) -> RuntimeFrontier | None:
     """Return the sole reached-producer gap with one dependency-closed sink."""
 
     if isinstance(snapshot, dict):
-        snapshot = BlackboardSnapshot.model_validate(snapshot)
+        snapshot = TaskMemorySnapshot.model_validate(snapshot)
     entries = [item for item in snapshot.proof_ledger if item.route_id == route_id]
     if not entries or any(ledger_entry_contradicts_route(item) for item in entries):
         return None
@@ -869,13 +869,13 @@ def dependency_closed_runtime_frontier(
 
 
 def dependency_closed_carrier_prefix_frontier(
-    snapshot: BlackboardSnapshot | dict[str, Any],
+    snapshot: TaskMemorySnapshot | dict[str, Any],
     route_id: str,
 ) -> CarrierPrefixFrontier | None:
     """Return one earliest unobserved transition after a reached carrier prefix."""
 
     if isinstance(snapshot, dict):
-        snapshot = BlackboardSnapshot.model_validate(snapshot)
+        snapshot = TaskMemorySnapshot.model_validate(snapshot)
     entries = [item for item in snapshot.proof_ledger if item.route_id == route_id]
     if not entries or any(ledger_entry_contradicts_route(item) for item in entries):
         return None
@@ -997,14 +997,14 @@ def dependency_closed_carrier_prefix_frontier(
     )
 
 
-class Blackboard(StrictModel):
+class TaskMemory(StrictModel):
     """Canonical durable Entity-Fact & Route-Proof state owned exclusively by Core."""
 
-    schema_version: Literal["vouchloom-blackboard/1.0"] = BLACKBOARD_SCHEMA_VERSION
+    schema_version: Literal["vouchloom-task-memory/1.0"] = MEMORY_SCHEMA_VERSION
     task_id: str = Field(min_length=1, max_length=500)
     updated_at: datetime
-    entities: list[BlackboardEntity] = Field(default_factory=list)
-    conclusions: list[BlackboardConclusion] = Field(default_factory=list)
+    entities: list[TaskMemoryEntity] = Field(default_factory=list)
+    conclusions: list[TaskMemoryConclusion] = Field(default_factory=list)
     routes: list[RouteSummary] = Field(default_factory=list)
     proof_ledger: list[ProofLedgerEntry] = Field(default_factory=list)
     active_route_id: str | None = Field(default=None, pattern=r"^route-[0-9]{3,}$")
@@ -1014,7 +1014,7 @@ class Blackboard(StrictModel):
     def validate_coherent_state(self) -> Self:
         entity_ids = [e.entity_id for e in self.entities]
         if len(entity_ids) != len(set(entity_ids)):
-            raise ValueError("blackboard entity_ids must be unique")
+            raise ValueError("task memory entity_ids must be unique")
         known_entities = set(entity_ids) | {"root"}
         if any(
             e.parent_entity_id is not None and e.parent_entity_id not in known_entities
@@ -1024,7 +1024,7 @@ class Blackboard(StrictModel):
 
         conclusion_keys = [c.key for c in self.conclusions]
         if len(conclusion_keys) != len(set(conclusion_keys)):
-            raise ValueError("blackboard conclusion keys must be unique")
+            raise ValueError("task memory conclusion keys must be unique")
 
         route_ids = [r.route_id for r in self.routes]
         if len(route_ids) != len(set(route_ids)):
@@ -1112,7 +1112,7 @@ class Blackboard(StrictModel):
             "conclusions": [c.model_dump(mode="json") for c in self.conclusions],
         }
 
-    def _retired_route_contradiction(self) -> BlackboardConclusion | None:
+    def _retired_route_contradiction(self) -> TaskMemoryConclusion | None:
         decision = self.route_decision
         if decision is None or decision.action != "new":
             return None
@@ -1133,7 +1133,7 @@ class Blackboard(StrictModel):
         if not contradictions:
             return None
         top = max(contradictions, key=lambda x: (x.updated_attempt, x.key))
-        return BlackboardConclusion(
+        return TaskMemoryConclusion(
             key=f"retired-{route.route_id}-contradiction",
             kind="result",
             statement=(
@@ -1154,7 +1154,7 @@ class Blackboard(StrictModel):
 
     def prompt_snapshot(
         self, *, max_chars: int = MAX_PROMPT_MEMORY_CHARS
-    ) -> BlackboardSnapshot:
+    ) -> TaskMemorySnapshot:
         """Derive a <=32,000-char prompt snapshot without mutating durable state."""
 
         visible_ids = self.visible_route_ids()
@@ -1190,7 +1190,7 @@ class Blackboard(StrictModel):
         ][:8]
 
         payload: dict[str, Any] = {
-            "schema_version": BLACKBOARD_SCHEMA_VERSION,
+            "schema_version": MEMORY_SCHEMA_VERSION,
             "task_id": self.task_id,
             "entities": [e.model_dump(mode="json") for e in self.entities[:32]],
             "common": [c.model_dump(mode="json") for c in common],
@@ -1227,32 +1227,32 @@ class Blackboard(StrictModel):
                 ]
                 if len(json.dumps(payload, separators=(",", ":"))) <= max_chars:
                     break
-        return BlackboardSnapshot.model_validate(payload)
+        return TaskMemorySnapshot.model_validate(payload)
 
 
-class BlackboardStore:
-    """Atomic persistence and mutation controller for one task Blackboard."""
+class TaskMemoryStore:
+    """Atomic persistence and mutation controller for one task TaskMemory."""
 
     def __init__(self, path: Path, task_id: str) -> None:
         self.path = path.expanduser().resolve()
         self.task_id = task_id
 
-    def load(self) -> Blackboard:
+    def load(self) -> TaskMemory:
         if not self.path.exists():
-            return Blackboard(
+            return TaskMemory(
                 task_id=self.task_id,
                 updated_at=datetime.now(UTC),
                 entities=[
-                    BlackboardEntity(
+                    TaskMemoryEntity(
                         entity_id="root",
                         kind="root",
                         label=f"Root target for {self.task_id}",
                     )
                 ],
             )
-        board = Blackboard.model_validate_json(self.path.read_text(encoding="utf-8"))
+        board = TaskMemory.model_validate_json(self.path.read_text(encoding="utf-8"))
         if board.task_id != self.task_id:
-            raise ValueError("blackboard task_id mismatch")
+            raise ValueError("task memory task_id mismatch")
         routes = [
             (
                 route.model_copy(update={"support": "contradicted"})
@@ -1267,7 +1267,7 @@ class BlackboardStore:
             for route in board.routes
         ]
         if routes != board.routes:
-            board = Blackboard.model_validate(
+            board = TaskMemory.model_validate(
                 board.model_copy(update={"routes": routes}).model_dump()
             )
         return board
@@ -1298,12 +1298,12 @@ class BlackboardStore:
                 os.unlink(tmp)
         return "/work/task-memory.json"
 
-    def register_entities(self, updates: list[BlackboardEntity]) -> Blackboard:
+    def register_entities(self, updates: list[TaskMemoryEntity]) -> TaskMemory:
         board = self.load()
         by_id = {e.entity_id: e for e in board.entities}
         for entity in updates:
             by_id[entity.entity_id] = entity
-        validated = Blackboard.model_validate(
+        validated = TaskMemory.model_validate(
             board.model_copy(
                 update={
                     "updated_at": datetime.now(UTC),
@@ -1314,7 +1314,7 @@ class BlackboardStore:
         self._write(validated)
         return validated
 
-    def merge_conclusions(self, updates: list[BlackboardConclusion]) -> Blackboard:
+    def merge_conclusions(self, updates: list[TaskMemoryConclusion]) -> TaskMemory:
         board = self.load()
         known_routes = {r.route_id for r in board.routes}
         by_key = {c.key: c for c in board.conclusions}
@@ -1339,7 +1339,7 @@ class BlackboardStore:
                     update={"key": f"{update.route_id}.{update.key}"}
                 )
             by_key[update.key] = update
-        validated = Blackboard.model_validate(
+        validated = TaskMemory.model_validate(
             board.model_copy(
                 update={
                     "updated_at": datetime.now(UTC),
@@ -1355,7 +1355,7 @@ class BlackboardStore:
         updates: list[ProofLedgerEntry],
         *,
         retire_route_ids: set[str] | None = None,
-    ) -> Blackboard:
+    ) -> TaskMemory:
         """Atomically upsert proof cells with cascading prune & 10-cell cap."""
 
         board = self.load()
@@ -1450,7 +1450,7 @@ class BlackboardStore:
                 and c.status != "contradicted"
             )
         ]
-        validated = Blackboard.model_validate(
+        validated = TaskMemory.model_validate(
             board.model_copy(
                 update={
                     "updated_at": datetime.now(UTC),
@@ -1477,7 +1477,7 @@ class BlackboardStore:
         failure_summary: str | None = None,
         increment_stall: bool = False,
         reset_stall: bool = False,
-    ) -> Blackboard:
+    ) -> TaskMemory:
         board = self.load()
         routes: list[RouteSummary] = []
         found = False
@@ -1517,7 +1517,7 @@ class BlackboardStore:
             )
         if not found:
             raise ValueError(f"cannot update unknown route: {route_id}")
-        validated = Blackboard.model_validate(
+        validated = TaskMemory.model_validate(
             board.model_copy(
                 update={"updated_at": datetime.now(UTC), "routes": routes}
             ).model_dump()
@@ -1633,7 +1633,7 @@ class BlackboardStore:
             writable_route_id=target_id,
             model=model,
         )
-        validated = Blackboard.model_validate(
+        validated = TaskMemory.model_validate(
             board.model_copy(
                 update={
                     "updated_at": datetime.now(UTC),
@@ -1646,7 +1646,7 @@ class BlackboardStore:
         self._write(validated)
         return next(r for r in validated.routes if r.route_id == target_id)
 
-    def _write(self, board: Blackboard) -> None:
+    def _write(self, board: TaskMemory) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         raw = board.model_dump_json(indent=2).encode("utf-8") + b"\n"
         fd, tmp = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)

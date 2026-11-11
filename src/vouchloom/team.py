@@ -39,25 +39,25 @@ from vouchloom.agent import (
 )
 from vouchloom.arbiters import SemanticArbiterSuite
 from vouchloom.audit import write_debug_event, write_task_audit_bundle
-from vouchloom.blackboard import (
-    CORE_OWNED_KEY_PREFIX,
-    Blackboard,
-    BlackboardConclusion,
-    BlackboardEntity,
-    BlackboardSnapshot,
-    BlackboardStore,
-    ProofLedgerEntry,
-    ProofSection,
-    RouteSummary,
-    conclusion_rejection_reason,
-    dependency_closed_runtime_frontier,
-    ledger_entry_contradicts_route,
-)
 from vouchloom.fsm import (
     StateMachineRegistry,
     StateMachineSpec,
     StateNodeSpec,
     TransitionSpec,
+)
+from vouchloom.memory import (
+    CORE_OWNED_KEY_PREFIX,
+    ProofLedgerEntry,
+    ProofSection,
+    RouteSummary,
+    TaskMemory,
+    TaskMemoryConclusion,
+    TaskMemoryEntity,
+    TaskMemorySnapshot,
+    TaskMemoryStore,
+    conclusion_rejection_reason,
+    dependency_closed_runtime_frontier,
+    ledger_entry_contradicts_route,
 )
 from vouchloom.models import (
     ROTATABLE_CAUSAL_DIMENSIONS,
@@ -187,13 +187,13 @@ class MemoryReviewTransitionAudit:
 
 
 def audit_memory_review_transition(
-    before: Blackboard,
+    before: TaskMemory,
     *,
     status: ReviewStatus,
     confidence: ReviewConfidence,
     next_step: str | None,
     updates: Sequence[ProofLedgerEntry],
-    after: Blackboard,
+    after: TaskMemory,
 ) -> MemoryReviewTransitionAudit:
     """Verify Reviewer state transition invariants independently of ledger pruning."""
 
@@ -291,7 +291,7 @@ class DeterministicRouteController:
 
     def select_route(
         self,
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         attempts: Sequence[AttemptRecord],
         *,
         attempt_number: int,
@@ -420,7 +420,7 @@ class DeterministicRouteController:
 
     @staticmethod
     def _requirement_from_failure(
-        previous: AttemptRecord, board: Blackboard
+        previous: AttemptRecord, board: TaskMemory
     ) -> tuple[CausalDimension, str, str]:
         if previous.status == "submitted":
             cat = (
@@ -537,7 +537,7 @@ class TwoTierObserver:
     async def evaluate(
         self,
         *,
-        board: Blackboard,
+        board: TaskMemory,
         route: RouteSummary,
         verified_signals: Sequence[SidebandSignal],
         registry: StateMachineRegistry,
@@ -585,7 +585,7 @@ class TwoTierObserver:
         }
         trace = await self._runtime.run(
             definition,
-            BlackboardSnapshot.model_validate(board.prompt_snapshot()).model_dump_json()
+            TaskMemorySnapshot.model_validate(board.prompt_snapshot()).model_dump_json()
             + "\n"
             + str(payload),
         )
@@ -688,7 +688,7 @@ class SupervisorScheduler:
 
     def rank_runnable_routes(
         self,
-        board: Blackboard,
+        board: TaskMemory,
         registry: StateMachineRegistry,
     ) -> list[RouteSummary]:
         runnable: list[tuple[tuple[int, int, int, str], RouteSummary]] = []
@@ -716,7 +716,7 @@ class SupervisorScheduler:
         return [r for _, r in runnable]
 
     def cross_entity_briefing(
-        self, board: Blackboard, entity_id: str
+        self, board: TaskMemory, entity_id: str
     ) -> list[dict[str, Any]]:
         """Collect verified clues discovered on sibling branches targeting entity_id."""
 
@@ -764,10 +764,10 @@ def convert_handoff_items_to_updates(
     durable_note_ids: set[str],
     construction_blockers: dict[str, list[str]],
     classify_unfiltered: bool = False,
-) -> tuple[list[BlackboardConclusion], list[ProofLedgerEntry]]:
-    """Convert Worker MemoryItems into Blackboard conclusions & ProofLedgerEntries."""
+) -> tuple[list[TaskMemoryConclusion], list[ProofLedgerEntry]]:
+    """Convert Worker MemoryItems into TaskMemory conclusions & ProofLedgerEntries."""
 
-    conclusions: list[BlackboardConclusion] = []
+    conclusions: list[TaskMemoryConclusion] = []
     ledger: list[ProofLedgerEntry] = []
 
     for item in items:
@@ -776,7 +776,7 @@ def convert_handoff_items_to_updates(
         if item.kind == "note":
             if not classify_unfiltered and item.id not in durable_note_ids:
                 continue
-            cand = BlackboardConclusion(
+            cand = TaskMemoryConclusion(
                 key=item.id,
                 kind="fact" if item.status != "hypothesis" else "hypothesis",
                 statement=item.claim,
@@ -867,8 +867,8 @@ class TeamOrchestrator:
     ) -> TaskRunResult:
         resolved_dir = await asyncio.to_thread(_resolve_dir_sync, task_dir)
         debug_dir = resolved_dir / "debug"
-        store = BlackboardStore(resolved_dir / "blackboard.json", task_id)
-        store.merge_conclusions([])  # Initialize root entity & blackboard on disk
+        store = TaskMemoryStore(resolved_dir / "memory.json", task_id)
+        store.merge_conclusions([])  # Initialize root entity & memory on disk
 
         root_spec = self.registry.get(root_fsm_id)
         budget = TaskBudgetEnvelope(
@@ -1006,7 +1006,7 @@ class TeamOrchestrator:
                 "attempts": [a.model_dump(mode="json") for a in result.attempts],
                 "transitions": result.transition_log,
             },
-            blackboard_path=store.path,
+            memory_path=store.path,
             artifacts=artifacts_map,
         )
         return result
@@ -1018,7 +1018,7 @@ class TeamOrchestrator:
         generation: int,
         objective: str,
         anchor: dict[str, Any],
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         result: TaskRunResult,
         task_dir: Path,
         debug_dir: Path,
@@ -1162,7 +1162,7 @@ class TeamOrchestrator:
             try:
                 trace = await worker_rt.run(
                     definition,
-                    BlackboardSnapshot.model_validate(snapshot).model_dump_json()
+                    TaskMemorySnapshot.model_validate(snapshot).model_dump_json()
                     + "\n"
                     + str(worker_payload),
                 )
@@ -1294,7 +1294,7 @@ class TeamOrchestrator:
         route: RouteSummary,
         spec: StateMachineSpec,
         anchor: dict[str, Any],
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         result: TaskRunResult,
         debug_dir: Path,
         spawned_entity_fsms: set[tuple[str, str]],
@@ -1353,13 +1353,13 @@ class TeamOrchestrator:
 
         # Verify CommandReceipt bindings for discovered entities & sideband signals
         cmd_by_seq = {c.sequence: c for c in command_receipts}
-        new_entities: list[BlackboardEntity] = []
+        new_entities: list[TaskMemoryEntity] = []
         for draft in reconciled.discovered_entities:
             cmd_rec = cmd_by_seq.get(draft.command_sequence)
             if cmd_rec is None:
                 continue
             new_entities.append(
-                BlackboardEntity(
+                TaskMemoryEntity(
                     entity_id=draft.entity_id,
                     kind=draft.kind,
                     parent_entity_id=route.entity_id,
@@ -1475,7 +1475,7 @@ class TeamOrchestrator:
         *,
         route: RouteSummary,
         verified_signals: list[SidebandSignal],
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         result: TaskRunResult,
         debug_dir: Path,
         spawned_entity_fsms: set[tuple[str, str]],
@@ -1614,7 +1614,7 @@ class TeamOrchestrator:
         tokens_used: int,
         route: RouteSummary,
         spec: StateMachineSpec,
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         result: TaskRunResult,
         task_dir: Path,
         seen_artifacts: set[str],
@@ -1773,7 +1773,7 @@ class TeamOrchestrator:
     def _advance_fsm_state(
         self,
         *,
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         route_id: str,
         spec: StateMachineSpec,
         action_outcome: Literal["completed", "refuted", "blocked"],
@@ -1834,7 +1834,7 @@ class TeamOrchestrator:
     def _record_blocked_attempt(
         self,
         *,
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         result: TaskRunResult,
         route: RouteSummary,
         category: BlockCategory,
@@ -1864,7 +1864,7 @@ class TeamOrchestrator:
     async def _run_memory_review(
         self,
         *,
-        store: BlackboardStore,
+        store: TaskMemoryStore,
         budget: TaskBudgetEnvelope,
         review_index: int,
         task_dir: Path,

@@ -8,7 +8,6 @@ import pytest
 
 from vouchloom import (
     AddGuardOp,
-    BlackboardStore,
     BreakoutEpisodeRecord,
     ContextualBanditRouter,
     EdgeCreditLedger,
@@ -26,6 +25,7 @@ from vouchloom import (
     StateMachineSpec,
     StateNodeSpec,
     TaskBudgetEnvelope,
+    TaskMemoryStore,
     TaskRunResult,
     TransitionSpec,
     TriggerPredicate,
@@ -82,7 +82,7 @@ def _sample_spec() -> StateMachineSpec:
 
 def test_backward_causal_credit_and_bandit_routing(tmp_path: Path) -> None:
     spec = _sample_spec()
-    store = BlackboardStore(tmp_path / "bb.json", "rl-task")
+    store = TaskMemoryStore(tmp_path / "bb.json", "rl-task")
     r_win = store.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="Win", model="core"
     )
@@ -121,7 +121,7 @@ def test_backward_causal_credit_and_bandit_routing(tmp_path: Path) -> None:
 
     credit = EdgeCreditLedger()
     rewards = credit.attribute_episode(
-        board=store.load(),
+        memory=store.load(),
         transition_log=[
             {
                 "route_id": r_win.route_id,
@@ -225,7 +225,7 @@ def test_graph_patch_mutations_and_shadow_replay_gate(tmp_path: Path) -> None:
     assert companions == []
 
     # Build historical winner & fail-closed control slices for ShadowReplayGate
-    winner_store = BlackboardStore(tmp_path / "winner.json", "ctrl-win")
+    winner_store = TaskMemoryStore(tmp_path / "winner.json", "ctrl-win")
     rw = winner_store.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="w", model="core"
     )
@@ -242,7 +242,7 @@ def test_graph_patch_mutations_and_shadow_replay_gate(tmp_path: Path) -> None:
         ]
     )
 
-    blocker_store = BlackboardStore(tmp_path / "blocker.json", "ctrl-block")
+    blocker_store = TaskMemoryStore(tmp_path / "blocker.json", "ctrl-block")
     rb = blocker_store.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="b", model="core"
     )
@@ -252,7 +252,7 @@ def test_graph_patch_mutations_and_shadow_replay_gate(tmp_path: Path) -> None:
         HistoricalShadowControl(
             control_id="winner-01",
             kind="historical_winner",
-            board=winner_store.load(),
+            memory=winner_store.load(),
             route_id=rw.route_id,
             source_state_id="recon",
             expected_target_state_id="exploit",
@@ -261,7 +261,7 @@ def test_graph_patch_mutations_and_shadow_replay_gate(tmp_path: Path) -> None:
         HistoricalShadowControl(
             control_id="fail-closed-01",
             kind="fail_closed_control",
-            board=blocker_store.load(),
+            memory=blocker_store.load(),
             route_id=rb.route_id,
             source_state_id="recon",
             expected_target_state_id=None,
@@ -328,7 +328,7 @@ async def test_meta_evolution_agent_end_to_end_yaml_persistence(tmp_path: Path) 
         async def aclose(self) -> None:
             return None
 
-    winner_store = BlackboardStore(tmp_path / "win2.json", "ctrl-win2")
+    winner_store = TaskMemoryStore(tmp_path / "win2.json", "ctrl-win2")
     rw = winner_store.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="w", model="core"
     )
@@ -348,7 +348,7 @@ async def test_meta_evolution_agent_end_to_end_yaml_persistence(tmp_path: Path) 
         HistoricalShadowControl(
             control_id="winner-01",
             kind="historical_winner",
-            board=winner_store.load(),
+            memory=winner_store.load(),
             route_id=rw.route_id,
             source_state_id="recon",
             expected_target_state_id="exploit",

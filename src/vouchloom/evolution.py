@@ -2,7 +2,7 @@
 
 Allows an outer Meta-Agent in simulation/range environments to continuously
 evolve declarative StateMachineSpecs safely:
-1. EdgeCreditLedger: backward causal credit assignment along Blackboard depends_on DAGs
+1. EdgeCreditLedger: backward causal credit assignment along TaskMemory depends_on DAGs
 2. ContextualBanditRouter: UCB1 / Thompson Sampling over competing FSM transitions
 3. Atomic Graph Mutation Operators: SplitState, AddGuard, PruneTransition,
    ExpandNodeToSubFSM, and PromoteBreakoutToSubFSM
@@ -21,11 +21,6 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from vouchloom.agent import AgentDefinition, AgentRuntimeError
-from vouchloom.blackboard import (
-    Blackboard,
-    ProofLedgerEntry,
-    ledger_dependency_closure,
-)
 from vouchloom.fsm import (
     GuardClause,
     GuardRegistry,
@@ -34,6 +29,11 @@ from vouchloom.fsm import (
     StateNodeSpec,
     TransitionSpec,
     TriggerPredicate,
+)
+from vouchloom.memory import (
+    ProofLedgerEntry,
+    TaskMemory,
+    ledger_dependency_closure,
 )
 from vouchloom.models import ModelUsage, StrictModel
 from vouchloom.runtime import ManagedAgentRuntime
@@ -65,7 +65,7 @@ class EdgeStats:
 
 
 class EdgeCreditLedger:
-    """Assigns causal RL credit to FSM transitions via Blackboard closures."""
+    """Assigns causal RL credit to FSM transitions via TaskMemory closures."""
 
     def __init__(self) -> None:
         self._stats: dict[tuple[str, str, str], EdgeStats] = {}
@@ -78,7 +78,7 @@ class EdgeCreditLedger:
     def attribute_episode(
         self,
         *,
-        board: Blackboard,
+        memory: TaskMemory,
         transition_log: Sequence[dict[str, Any]],
         winning_route_id: str | None,
         winning_terminal_keys: Sequence[str] = (),
@@ -89,7 +89,7 @@ class EdgeCreditLedger:
         causal_keys: set[tuple[str, str]] = set()
         if winning_route_id is not None:
             route_entries = [
-                x for x in board.proof_ledger if x.route_id == winning_route_id
+                x for x in memory.proof_ledger if x.route_id == winning_route_id
             ]
             by_key = {x.key: x for x in route_entries}
             seeds: list[ProofLedgerEntry] = (
@@ -110,7 +110,7 @@ class EdgeCreditLedger:
                 # Also credit cross-entity upstream producers!
                 for cell in route_entries:
                     for ref_entity in cell.cross_entity_refs:
-                        for other in board.proof_ledger:
+                        for other in memory.proof_ledger:
                             if other.entity_id == ref_entity and other.status in {
                                 "source_backed",
                                 "artifact_encoded",
@@ -512,7 +512,7 @@ class HistoricalShadowControl:
 
     control_id: str
     kind: Literal["historical_winner", "fail_closed_control"]
-    board: Blackboard
+    memory: TaskMemory
     route_id: str
     source_state_id: str
     expected_target_state_id: str | None
@@ -567,7 +567,7 @@ class ShadowReplayGate:
                 t
                 for t in outgoing
                 if t.guard.evaluate_deterministic(
-                    ctrl.board,
+                    ctrl.memory,
                     ctrl.route_id,
                     context=ctrl.context,
                     guard_registry=self.guard_registry,

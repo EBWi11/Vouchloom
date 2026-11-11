@@ -1,4 +1,4 @@
-"""Tests for Layer 1 Blackboard 10+1 ledger invariants, frontiers, and ProofGraph."""
+"""Tests for Layer 1 TaskMemory 10+1 ledger invariants, frontiers, and ProofGraph."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from vouchloom import (
-    BlackboardEntity,
-    BlackboardStore,
     Capability,
     ExecutionReceipt,
     ProofLedgerEntry,
+    TaskMemoryEntity,
+    TaskMemoryStore,
     build_capability_plan,
     delivery_stage_ready,
     dependency_closed_carrier_prefix_frontier,
@@ -20,10 +20,10 @@ from vouchloom import (
 )
 
 
-def test_blackboard_entity_requires_receipt_and_10_plus_1_pruning(
+def test_task_memory_entity_requires_receipt_and_10_plus_1_pruning(
     tmp_path: Path,
 ) -> None:
-    store = BlackboardStore(tmp_path / "blackboard.json", "task-01")
+    store = TaskMemoryStore(tmp_path / "memory.json", "task-01")
     route = store.apply_route_decision(
         action="new",
         route_id=None,
@@ -33,7 +33,7 @@ def test_blackboard_entity_requires_receipt_and_10_plus_1_pruning(
     )
 
     with pytest.raises(ValueError, match="derived child entities require"):
-        BlackboardEntity(
+        TaskMemoryEntity(
             entity_id="svc-8080",
             kind="service",
             parent_entity_id="root",
@@ -43,7 +43,7 @@ def test_blackboard_entity_requires_receipt_and_10_plus_1_pruning(
 
     store.register_entities(
         [
-            BlackboardEntity(
+            TaskMemoryEntity(
                 entity_id="svc-8080",
                 kind="service",
                 parent_entity_id="root",
@@ -87,7 +87,7 @@ def test_blackboard_entity_requires_receipt_and_10_plus_1_pruning(
 def test_cascading_contradiction_and_retired_negative_projection(
     tmp_path: Path,
 ) -> None:
-    store = BlackboardStore(tmp_path / "blackboard.json", "task-02")
+    store = TaskMemoryStore(tmp_path / "memory.json", "task-02")
     r1 = store.apply_route_decision(
         action="new",
         route_id=None,
@@ -174,7 +174,7 @@ def test_cascading_contradiction_and_retired_negative_projection(
 
 
 def test_frontiers_proof_graph_single_state_and_delivery_gate(tmp_path: Path) -> None:
-    store = BlackboardStore(tmp_path / "blackboard.json", "task-03")
+    store = TaskMemoryStore(tmp_path / "memory.json", "task-03")
     r = store.apply_route_decision(
         action="new",
         route_id=None,
@@ -263,7 +263,7 @@ def test_frontiers_proof_graph_single_state_and_delivery_gate(tmp_path: Path) ->
         )
 
     # CarrierPrefixFrontier check when next state_transition is source_backed
-    store2 = BlackboardStore(tmp_path / "bb2.json", "task-04")
+    store2 = TaskMemoryStore(tmp_path / "bb2.json", "task-04")
     r2 = store2.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="Prefix", model="core"
     )

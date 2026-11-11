@@ -8,7 +8,7 @@ Unlike chat-centric multi-agent frameworks where LLMs freely improvise global co
 
 - **Core Owns State & Receipts**: State transitions, route branching (`new | continue | fork | reopen`), `1 -> N` dynamic entity fission, SHA-256 deduplication, budget envelopes, and final verification are owned exclusively by deterministic Python code.
 - **Workers Own Bounded Local Exploration**: Ephemeral Worker sub-agents execute in isolated scratch sandboxes with zero state-mutating business tools, physically branch-locked JSON output schemas, and hard token/tool-call ceilings.
-- **No Receipt, No Fact; No Proof Closure, No Transition**: Every discovered child entity, blackboard claim, and out-of-band observer signal must bind a cryptographic `CommandReceipt` or `ExecutionReceipt` before Core admits it.
+- **No Receipt, No Fact; No Proof Closure, No Transition**: Every discovered child entity, durable memory claim, and out-of-band observer signal must bind a cryptographic `CommandReceipt` or `ExecutionReceipt` before Core admits it.
 - **Outer-Loop RL Over Declarative YAML**: An outer `MetaEvolutionAgent` and `ContextualBanditRouter` continuously refine declarative `StateMachineSpec` YAML files in simulation/benchmark environments, gated by `ShadowReplayGate` so historical winning trajectories never regress.
 
 ---
@@ -37,8 +37,8 @@ flowchart TB
         Arb["SemanticArbiterSuite (Isolated, 0 Tools)\nFail-Open Admission · Fail-Closed Memory Classification · 2-of-2 Consensus"]
     end
 
-    subgraph L1["Layer 1 · Blackboard, ProofGraph, & Hybrid FSM IR (blackboard.py, proof.py, fsm.py)"]
-        BB["Entity-Fact Blackboard & 10+1 ProofLedger\nCascading Contradiction Prune · Indivisible Carrier+Gap Closure"]
+    subgraph L1["Layer 1 · TaskMemory, ProofGraph, & Hybrid FSM IR (memory.py, proof.py, fsm.py)"]
+        BB["TaskMemory & 10+1 ProofLedger\nCascading Contradiction Prune · Indivisible Carrier+Gap Closure"]
         PG["ProofGraph & CapabilityPlan\nSingle-State Skill Admission · Runtime & Prefix Frontiers"]
         FSM["StateMachineSpec (YAML/JSON) + GuardRegistry\nTriggerPredicate Auto-Mount · Acyclic sub_fsm_id Nesting"]
     end
@@ -61,8 +61,8 @@ flowchart TB
 | Invariant | Mechanism | Module |
 | :--- | :--- | :--- |
 | **Strict Schema Boundary** | Every internal and LLM-facing model inherits `StrictModel (extra="forbid")`. Delivery stages use `WorkerArtifactOnlyOutput` (no handoff branch); Core-action/probe stages use `WorkerHandoffOnlyOutput` (no artifact branch). | `models.py`, `agent.py` |
-| **Receipt-Bound `1 -> N` Fission** | Any Worker-discovered child `BlackboardEntity` or `SidebandSignal` must reference a valid `CommandReceipt.sha256` from that turn; hallucinated entities are dropped. | `blackboard.py`, `receipts.py` |
-| **`10 + 1` Acyclic Proof Ledger** | Each route retains at most `10` regular proof cells + `1` reserved `core.runtime-target.*` slot. Contradicting or rewriting an upstream structural cell cascades to delete all transitive downstream dependents and retires the route. | `blackboard.py` |
+| **Receipt-Bound `1 -> N` Fission** | Any Worker-discovered child `TaskMemoryEntity` or `SidebandSignal` must reference a valid `CommandReceipt.sha256` from that turn; hallucinated entities are dropped. | `memory.py`, `receipts.py` |
+| **`10 + 1` Acyclic Proof Ledger** | Each route retains at most `10` regular proof cells + `1` reserved `core.runtime-target.*` slot. Contradicting or rewriting an upstream structural cell cascades to delete all transitive downstream dependents and retires the route. | `memory.py` |
 | **Single-State Skill Admission** | `CapabilityPlan` projects current anchor, proof ledger, and execution receipts into a `ProofGraph` and enforces that one Worker turn installs skills from **at most one** capability stage (`analysis`, `construction`, or `runtime`). | `proof.py` |
 | **Startup vs. Runtime Verification** | `ExecutionReceipt` separates `environment_startup` noise from `target_runtime` consumption; first milestone hits trigger a `1.2x` verification window and require fresh replay fingerprint agreement. | `receipts.py`, `team.py` |
 | **Two-Stage JSON Repair & Salvage** | Schema validation failures retry in-thread first, then escalate to an isolated, tool-free `64k` **Pure JSON Repair Agent**; 1-command wall-clock timeouts salvage receipts via `recover_bounded_action_receipt`. | `runtime.py`, `arbiters.py` |
@@ -245,7 +245,7 @@ from vouchloom import (
 # 1. Fast Loop: Backward causal credit assignment + Bandit edge weight export
 credit_ledger = EdgeCreditLedger()
 credit_ledger.attribute_episode(
-    board=blackboard,
+    memory=task_memory,
     transition_log=run_result.transition_log,
     winning_route_id="route-002",
 )
@@ -285,7 +285,7 @@ src/vouchloom/
   receipts.py        # CommandReceipt, ExecutionReceipt, ActionReceipt, SidebandSignal
   request_budget.py  # Conservative UTF-8 byte/3 preflight context-window gate
   audit.py           # Secret-redacted SHA-256 hash-linked event chain & deterministic ZIP
-  blackboard.py      # 1->N BlackboardEntity DAG, 10+1 ProofLedger, Frontiers, Capsules
+  memory.py          # 1->N TaskMemoryEntity DAG, 10+1 ProofLedger, Frontiers, Capsules
   proof.py           # ProofGraph, Single-State CapabilityPlan, delivery_stage_ready
   fsm.py             # Hybrid YAML/JSON StateMachineSpec, TriggerPredicate, GuardRegistry
   agent.py           # Immutable AgentSkill, AgentDefinition, branch-locked Worker outputs

@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from vouchloom import (
-    BlackboardStore,
     ExecutionReceipt,
     GuardClause,
     LocalDirectorySandbox,
@@ -22,6 +21,7 @@ from vouchloom import (
     StateMachineRegistry,
     StateMachineSpec,
     StateNodeSpec,
+    TaskMemoryStore,
     TeamOrchestrator,
     TransitionSpec,
     TriggerPredicate,
@@ -269,9 +269,7 @@ async def test_team_orchestrator_entity_fission_and_observer_breakout(
     assert run_res.breakout_episodes[0].succeeded is True
     assert run_res.audit_zip_path is not None and run_res.audit_zip_path.is_file()
 
-    board = BlackboardStore(
-        tmp_path / "run" / "blackboard.json", "range-target-01"
-    ).load()
+    board = TaskMemoryStore(tmp_path / "run" / "memory.json", "range-target-01").load()
     entity_ids = {e.entity_id for e in board.entities}
     assert "svc.8080" in entity_ids
     assert any(r.fsm_id == "http-service-audit" for r in board.routes)
@@ -280,7 +278,7 @@ async def test_team_orchestrator_entity_fission_and_observer_breakout(
 def test_memory_review_transition_audit_blocks_self_created_stop(
     tmp_path: Path,
 ) -> None:
-    store = BlackboardStore(tmp_path / "bb.json", "task-rev")
+    store = TaskMemoryStore(tmp_path / "bb.json", "task-rev")
     r = store.apply_route_decision(
         action="new", route_id=None, attempt=1, rationale="Init", model="core"
     )
