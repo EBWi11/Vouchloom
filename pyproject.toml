@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vouchloom"
+version = "0.1.0"
+description = "Receipt-gated hierarchical state machine, Agent Team, Observer breakout, and RL graph-evolution core library"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx[socks]>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pyyaml>=6.0.2,<7",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.25",
+  "ruff>=0.12",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vouchloom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"
