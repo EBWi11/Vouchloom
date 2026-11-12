@@ -19,10 +19,17 @@ from typing import Any, Literal
 import yaml
 
 from vouchloom.agent import AgentSkill
-from vouchloom.fsm import GuardRegistry, StateMachineRegistry, StateMachineSpec
+from vouchloom.fsm import (
+    GuardRegistry,
+    StateMachineRegistry,
+    StateMachineSpec,
+    StateNodeSpec,
+)
 from vouchloom.memory import (
     CORE_RUNTIME_TARGET_KEY_PREFIX,
+    RouteSummary,
     TaskMemory,
+    TaskMemorySnapshot,
     dependency_closed_runtime_frontier,
     ledger_dependency_closure,
     ledger_entry_contradicts_route,
@@ -67,17 +74,24 @@ _TOPICS_BY_DIMENSION: dict[CausalDimension, tuple[str, ...]] = {
         "state_transition_witness",
         "runtime_probe_debugging",
     ),
+    "fault_precondition": ("input_boundary", "sink_contract"),
     "precondition_gate": ("input_boundary", "sink_contract"),
     "framing_integrity": (
         "structured_state",
         "artifact_fidelity",
         "state_transition_witness",
     ),
+    "fault_observability": (
+        "fault_observability",
+        "sink_contract",
+        "runtime_probe_debugging",
+    ),
     "observability": (
         "fault_observability",
         "sink_contract",
         "runtime_probe_debugging",
     ),
+    "allocation_geometry": ("fault_observability", "sink_contract"),
     "state_geometry": ("fault_observability", "sink_contract"),
     "lifecycle_order": (
         "lifecycle_ownership",
@@ -551,3 +565,77 @@ def load_bug_hunter_preset(
         handbook=handbook,
         sandbox_helpers=helpers,
     )
+
+
+class BugHunterRequestComposer:
+    """Injects RAW_POC_HANDBOOK + selected topics just like cybergym_agent.py."""
+
+    def __init__(
+        self,
+        handbook: BugHunterHandbookCatalog,
+        *,
+        project_name: str | None = None,
+    ) -> None:
+        self.handbook = handbook
+        self.project_name = project_name
+
+    def compose(
+        self,
+        *,
+        system_prompt: str,
+        payload: dict[str, Any],
+        route: RouteSummary,
+        state_node: StateNodeSpec,
+        snapshot: TaskMemorySnapshot,
+        anchor: dict[str, Any],
+        has_attempts: bool,
+        bounded_action_only: bool,
+    ) -> tuple[str, dict[str, Any]]:
+        # Mirrors cybergym_agent.py: thin/core/bounded stages omit handbook!
+        if bounded_action_only or state_node.mode in {
+            "core_action",
+            "bounded_action",
+            "thin_mutation",
+            "exploratory_probe",
+        }:
+            return system_prompt, payload
+
+        decision = snapshot.route_decision
+        dim: CausalDimension = (
+            decision.causal_dimension if decision is not None else "unclassified"
+        )
+        focus: Literal["complete_route", "task_identity_probe"] = (
+            "task_identity_probe"
+            if state_node.id == "second_poc_identity_probe"
+            else "complete_route"
+        )
+        entity = next(
+            (e for e in snapshot.entities if e.entity_id == route.entity_id), None
+        )
+        proj = (
+            (entity.attributes.get("project") if entity else None)
+            or anchor.get("project_name")
+            or self.project_name
+        )
+        topic_ids = select_bug_hunter_handbook_topics(
+            self.handbook,
+            harness_evidence=anchor,
+            project_name=str(proj) if proj else None,
+            causal_dimension=dim,
+            causal_focus=focus,
+            has_attempts=has_attempts,
+        )
+        enriched_prompt = f"{self.handbook.render_base_prompt()}\n{system_prompt}"
+        enriched_payload = {
+            **payload,
+            "required_handbook_knowledge": [
+                {
+                    "id": tid,
+                    "summary": self.handbook.topics[tid].summary,
+                    "content": self.handbook.topics[tid].content,
+                }
+                for tid in topic_ids
+                if tid in self.handbook.topics
+            ],
+        }
+        return enriched_prompt, enriched_payload

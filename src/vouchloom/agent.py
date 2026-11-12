@@ -378,6 +378,14 @@ class PathArtifactSource(StrictModel):
 ArtifactSource = InlineArtifactSource | DisclosedArtifactSource | PathArtifactSource
 
 
+class PublicNeutralizationReceipt(StrictModel):
+    """Public-source counterfactual evidence for one candidate (from poc.py)."""
+
+    operation: str = Field(min_length=1, max_length=600)
+    baseline_observation: str = Field(min_length=1, max_length=600)
+    neutralized_observation: str = Field(min_length=1, max_length=600)
+
+
 class ArtifactPayload(StrictModel):
     source: ArtifactSource
     rationale: str = Field(default="model-generated candidate", min_length=1)
@@ -385,6 +393,7 @@ class ArtifactPayload(StrictModel):
     construction_receipt: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     deterministically_constructed: bool = False
     construction_context: str | None = None
+    public_neutralization_receipt: PublicNeutralizationReceipt | None = None
     causal_dimension: CausalDimension = "unclassified"
     changed_constraint: str | None = None
     semantic_checkpoint: str | None = None
@@ -462,6 +471,7 @@ class WorkerModelOutput(StrictModel):
     construction_receipt: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     deterministically_constructed: bool | None = None
     construction_context: str | None = None
+    public_neutralization_receipt: PublicNeutralizationReceipt | None = None
     causal_dimension: CausalDimension | None = None
     changed_constraint: str | None = None
     semantic_checkpoint: str | None = None
@@ -490,6 +500,7 @@ class WorkerModelOutput(StrictModel):
                 deterministically_constructed=self.deterministically_constructed
                 or False,
                 construction_context=self.construction_context,
+                public_neutralization_receipt=self.public_neutralization_receipt,
                 causal_dimension=self.causal_dimension or "unclassified",
                 changed_constraint=self.changed_constraint,
                 semantic_checkpoint=self.semantic_checkpoint,

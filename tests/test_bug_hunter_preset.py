@@ -9,19 +9,24 @@ from typing import Any
 import pytest
 
 from vouchloom import (
+    ArtifactOutput,
     ExecutionReceipt,
+    InlineArtifactSource,
     LocalDirectorySandbox,
     ManagedAgentRuntime,
     ModelTurnResponse,
     ModelUsage,
     ProofLedgerEntry,
+    PublicNeutralizationReceipt,
     RouteSummary,
     TaskMemoryEntity,
     TaskMemoryStore,
     TeamOrchestrator,
+    candidate_has_high_confidence_source_proof,
 )
 from vouchloom.presets import (
     BUG_HUNTER_CORE_FSM_ID,
+    BugHunterRequestComposer,
     load_bug_hunter_preset,
     select_bug_hunter_handbook_topics,
 )
@@ -327,6 +332,9 @@ async def test_bug_hunter_core_fsm_end_to_end_pipeline_execution(
             worker, sandbox=LocalDirectorySandbox(wd)
         ),
         evaluator=OfficialVulnerableEvaluator(),
+        request_composer=BugHunterRequestComposer(
+            bundle.handbook, project_name="graphicsmagick"
+        ),
         skills=bundle.skills,
         concurrency=1,
     )
@@ -336,6 +344,7 @@ async def test_bug_hunter_core_fsm_end_to_end_pipeline_execution(
         root_fsm_id=BUG_HUNTER_CORE_FSM_ID,
         task_dir=tmp_path / "bh-run",
         objective="Reproduce JNX tile bounds fault",
+        mode="fast",
         max_generations=3,
     )
 
@@ -344,3 +353,119 @@ async def test_bug_hunter_core_fsm_end_to_end_pipeline_execution(
     visited_targets = [t["target_state"] for t in res.transition_log]
     assert "static_source_research" in visited_targets
     assert "final_artifact_delivery" in visited_targets
+
+
+def test_bug_hunter_high_confidence_first_crash_and_seed_carrier_persistence(
+    tmp_path: Path,
+) -> None:
+    """Verify high-confidence source proof & /work/seeds/current.bin persistence."""
+
+    import base64
+
+    from vouchloom import MemoryItem, NextAction, ResearchHandoff
+    from vouchloom.team import _persist_handoff_work_carrier_sync
+
+    store = TaskMemoryStore(tmp_path / "hc.json", "arvo:64945")
+    route = store.apply_route_decision(
+        action="new",
+        route_id=None,
+        attempt=1,
+        rationale="Closed route",
+        model="core",
+    )
+    store.merge_ledger(
+        [
+            ProofLedgerEntry(
+                key="t",
+                section="target_contract",
+                claim="mruby_fuzzer",
+                status="source_backed",
+                evidence=["fuzz.c:1"],
+                route_id=route.route_id,
+            ),
+            ProofLedgerEntry(
+                key="e",
+                section="call_edge",
+                claim="mrb_str_format -> fmt_float",
+                status="source_backed",
+                depends_on=["t"],
+                evidence=["fmt_fp.c:80"],
+                route_id=route.route_id,
+            ),
+            ProofLedgerEntry(
+                key="cond",
+                section="condition",
+                condition_role="required",
+                claim="Subnormal float32 operand",
+                status="source_backed",
+                depends_on=["e"],
+                evidence=["fmt_fp.c:140"],
+                route_id=route.route_id,
+            ),
+            ProofLedgerEntry(
+                key="s",
+                section="sink",
+                claim="Buffer overflow at mrb_format_float:200",
+                status="source_backed",
+                depends_on=["cond"],
+                evidence=["fmt_fp.c:200"],
+                route_id=route.route_id,
+            ),
+            ProofLedgerEntry(
+                key="c",
+                section="construction",
+                carrier_construction=True,
+                claim="160-byte Ruby format string",
+                status="artifact_encoded",
+                depends_on=["s"],
+                evidence=["/work/poc.bin"],
+                route_id=route.route_id,
+            ),
+        ]
+    )
+    art = ArtifactOutput(
+        source=InlineArtifactSource(
+            kind="inline",
+            artifact_base64=base64.b64encode(b"A" * 16).decode("ascii"),
+        ),
+        rationale="Exact closed construction",
+        claim_binding="mrb_format_float overflow",
+        construction_receipt="f" * 64,
+        deterministically_constructed=True,
+        public_neutralization_receipt=PublicNeutralizationReceipt(
+            operation="guard buf end before write",
+            baseline_observation="exit 1 ASan overflow",
+            neutralized_observation="exit 0 clean",
+        ),
+        causal_dimension="fault_precondition",
+        changed_constraint="subnormal exponent -> overflow",
+        semantic_checkpoint="mrb_format_float:200",
+    )
+    assert candidate_has_high_confidence_source_proof(store.load(), route.route_id, art)
+
+    # Verify /work/poc.bin -> read-only 0o444 /work/seeds/current.bin persistence
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "poc.bin").write_bytes(b"SEED_CARRIER_BYTES")
+    handoff = ResearchHandoff(
+        summary="Saved discovered fixture carrier",
+        next_step="Execute against target",
+        next_action=NextAction(
+            id="act.exec",
+            kind="execute",
+            target="Run target on /work/poc.bin",
+            expected_observation="checkpoint trace",
+        ),
+        items=[
+            MemoryItem(
+                id="obs.1",
+                kind="observation",
+                status="source_backed",
+                claim="Fixture copied",
+                evidence=["/work/poc.bin"],
+            )
+        ],
+    )
+    rewritten = _persist_handoff_work_carrier_sync(handoff, work)
+    assert "/work/seeds/current.bin" in rewritten.next_action.target
+    assert (work / "seeds" / "current.bin").read_bytes() == b"SEED_CARRIER_BYTES"

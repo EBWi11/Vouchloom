@@ -35,6 +35,9 @@ def add_usage(left: ModelUsage, right: ModelUsage) -> ModelUsage:
 CausalDimension = Literal[
     "input_boundary",
     "parser_phase",
+    "fault_precondition",
+    "fault_observability",
+    "allocation_geometry",
     "precondition_gate",
     "observability",
     "state_geometry",
@@ -49,9 +52,9 @@ CausalDimension = Literal[
 CAUSAL_DIMENSIONS: tuple[CausalDimension, ...] = (
     "input_boundary",
     "parser_phase",
-    "precondition_gate",
-    "observability",
-    "state_geometry",
+    "fault_precondition",
+    "fault_observability",
+    "allocation_geometry",
     "framing_integrity",
     "lifecycle_order",
     "construction_encoding",
@@ -62,7 +65,7 @@ CAUSAL_DIMENSIONS: tuple[CausalDimension, ...] = (
 
 ROTATABLE_CAUSAL_DIMENSIONS: tuple[CausalDimension, ...] = (
     "parser_phase",
-    "state_geometry",
+    "allocation_geometry",
     "framing_integrity",
     "lifecycle_order",
 )
@@ -90,10 +93,12 @@ BlockCategory = Literal[
     "turn_wall_timeout",
 ]
 
-RunMode = Literal["fast", "standard", "thorough"]
+RunMode = Literal["fast", "fast-competition", "competition", "standard", "thorough"]
 
 MODE_BUDGET_RATIOS: dict[RunMode, tuple[int, int]] = {
     "fast": (2, 5),
+    "fast-competition": (1, 1),
+    "competition": (7, 5),
     "standard": (1, 1),
     "thorough": (7, 5),
 }
