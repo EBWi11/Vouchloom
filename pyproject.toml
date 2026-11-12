@@ -36,6 +36,7 @@ artifacts = [
   "src/vouchloom/presets/bug_hunter/skills/**/*",
   "src/vouchloom/presets/bug_hunter/sandbox_helpers/*",
   "src/vouchloom/presets/pentest/fsm_specs/*.yaml",
+  "src/vouchloom/presets/pentest/playbooks/*.yaml",
 ]
 
 [tool.pytest.ini_options]
