@@ -294,3 +294,16 @@ async def test_observer_tier2_adhoc_fsm_mount_and_oversized_downgrade(
     assert decision.adhoc_fsm is not None
     assert decision.adhoc_fsm.ad_hoc_ephemeral is True
     assert reg.get("adhoc-grpc-reflection").ad_hoc_ephemeral is True
+
+    # Re-proposing an already-registered fsm_id must not overwrite it or crash
+    # the task; the Observer downgrades to a Tier 1 probe instead.
+    mounted = reg.get("adhoc-grpc-reflection")
+    decision2, _ = await obs.evaluate(
+        board=store.load(),
+        route=route,
+        verified_signals=[sig],
+        registry=reg,
+    )
+    assert decision2.action == "tier1_exploratory_probe"
+    assert "already registered" in decision2.rationale
+    assert reg.get("adhoc-grpc-reflection") is mounted

@@ -26,6 +26,11 @@ from vouchloom.audit import (
     write_debug_event,
     write_task_audit_bundle,
 )
+from vouchloom.container import (
+    ContainerExecutor,
+    ContainerSandbox,
+    DockerExecutor,
+)
 from vouchloom.evolution import (
     AddGuardOp,
     ContextualBanditRouter,
@@ -110,6 +115,7 @@ from vouchloom.runtime import (
     ModelTurnResponse,
     OpenAICompatibleModelBackend,
     SandboxBackend,
+    ToolGateway,
 )
 from vouchloom.team import (
     AttemptRecord,
@@ -124,6 +130,12 @@ from vouchloom.team import (
     TwoTierObserver,
     audit_memory_review_transition,
     candidate_has_high_confidence_source_proof,
+)
+from vouchloom.tools import (
+    HTTP_REQUEST_TOOL_SCHEMA,
+    HttpRequestGateway,
+    ScopeGuardedSandbox,
+    ScopePolicy,
 )
 
 __all__ = [
@@ -145,9 +157,12 @@ __all__ = [
     "CausalDimension",
     "CodexAppServerBackend",
     "CommandReceipt",
+    "ContainerExecutor",
+    "ContainerSandbox",
     "ContextualBanditRouter",
     "DebugAgentRuntime",
     "DeterministicRouteController",
+    "DockerExecutor",
     "DynamicConcurrencyLimiter",
     "EdgeCreditLedger",
     "EvolutionCycleOutcome",
@@ -161,6 +176,11 @@ __all__ = [
     "HistoricalShadowControl",
     "InlineArtifactSource",
     "LocalDirectorySandbox",
+    "HTTP_REQUEST_TOOL_SCHEMA",
+    "HttpRequestGateway",
+    "ScopeGuardedSandbox",
+    "ScopePolicy",
+    "ToolGateway",
     "ManagedAgentRuntime",
     "MODE_BUDGET_RATIOS",
     "MemoryItem",

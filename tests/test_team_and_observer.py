@@ -36,6 +36,7 @@ class DynamicTeamBackend:
 
     def __init__(self) -> None:
         self.step = 0
+        self.aclose_calls = 0
 
     async def complete(
         self,
@@ -45,6 +46,8 @@ class DynamicTeamBackend:
         allow_tools: bool,
         max_output_tokens: int | None,
     ) -> ModelTurnResponse:
+        # Real HTTP clients cannot be reused once closed.
+        assert self.aclose_calls == 0, "shared backend closed mid-run"
         sys_prompt = str(messages[0].get("content", ""))
         has_tool_output = any(m.get("role") == "tool" for m in messages)
 
@@ -156,7 +159,7 @@ class DynamicTeamBackend:
         )
 
     async def aclose(self) -> None:
-        return None
+        self.aclose_calls += 1
 
 
 class MockDifferentialEvaluator:
@@ -264,6 +267,7 @@ async def test_team_orchestrator_entity_fission_and_observer_breakout(
     )
 
     assert run_res.status == "passed"
+    assert backend.aclose_calls == 0
     assert run_res.final_artifact == b"EXPLOIT_POC_BYTES"
     assert len(run_res.breakout_episodes) == 1
     assert run_res.breakout_episodes[0].tier == "tier1_probe"
@@ -484,3 +488,75 @@ async def test_bug_hunter_fidelity_safe_path_startup_retry_and_final_selector(
         tmp_path / "fidelity-run" / "memory.json", "fidelity-01"
     ).load()
     assert any(x.key == "core.latest-runtime" for x in mem.proof_ledger)
+
+
+@pytest.mark.asyncio
+async def test_parent_fsm_waits_for_nested_sub_fsm_to_finish(tmp_path: Path) -> None:
+    registry = StateMachineRegistry()
+    registry.register(
+        StateMachineSpec(
+            fsm_id="child-fsm",
+            description="Child already at its terminal state",
+            initial_state="done",
+            states=[
+                StateNodeSpec(
+                    id="done", title="Done", system_prompt="Done", is_terminal=True
+                )
+            ],
+        )
+    )
+    registry.register(
+        StateMachineSpec(
+            fsm_id="parent-fsm",
+            description="Parent delegating to child",
+            initial_state="delegate",
+            states=[
+                StateNodeSpec(
+                    id="delegate",
+                    title="Delegate",
+                    system_prompt="Delegate",
+                    sub_fsm_id="child-fsm",
+                ),
+                StateNodeSpec(
+                    id="done", title="Done", system_prompt="Done", is_terminal=True
+                ),
+            ],
+            transitions=[
+                TransitionSpec(
+                    id="after_child",
+                    source="delegate",
+                    target="done",
+                    guard=GuardClause(require_action_outcome="completed"),
+                )
+            ],
+        )
+    )
+
+    def no_worker(work_dir: Path) -> ManagedAgentRuntime:
+        raise AssertionError("sub-FSM delegation must not start a worker")
+
+    orchestrator = TeamOrchestrator(registry=registry, worker_runtime_factory=no_worker)
+
+    # Generation 1 only spawns the child; the parent must not advance yet.
+    first = await orchestrator.run_task(
+        task_id="nested-1",
+        root_fsm_id="parent-fsm",
+        task_dir=tmp_path / "one",
+        objective="nested",
+        max_generations=1,
+    )
+    assert first.transition_log == []
+    board = TaskMemoryStore(tmp_path / "one" / "memory.json", "nested-1").load()
+    parent = next(r for r in board.routes if r.fsm_id == "parent-fsm")
+    assert parent.current_state_id == "delegate"
+    assert any(r.fsm_id == "child-fsm" for r in board.routes)
+
+    # Once the child is terminal, the parent advances with outcome "completed".
+    second = await orchestrator.run_task(
+        task_id="nested-2",
+        root_fsm_id="parent-fsm",
+        task_dir=tmp_path / "two",
+        objective="nested",
+        max_generations=3,
+    )
+    assert [t["transition_id"] for t in second.transition_log] == ["after_child"]

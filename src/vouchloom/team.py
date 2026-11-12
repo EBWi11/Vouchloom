@@ -17,7 +17,7 @@ import re
 import stat
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -829,7 +829,21 @@ class TwoTierObserver:
                     trace.usage,
                 )
             adhoc = decision.adhoc_fsm.model_copy(update={"ad_hoc_ephemeral": True})
-            registry.register(adhoc)
+            try:
+                registry.register(adhoc)
+            except (KeyError, ValueError) as err:
+                return (
+                    ObserverDecisionOutput(
+                        action="tier1_exploratory_probe",
+                        rationale=(
+                            "Downgraded unregistrable ad-hoc FSM to Tier 1 probe: "
+                            f"{err}"
+                        )[:500],
+                        probe_target=route.entity_id,
+                        probe_hypothesis=decision.rationale[:300],
+                    ),
+                    trace.usage,
+                )
             decision = decision.model_copy(update={"adhoc_fsm": adhoc})
         return decision, trace.usage
 
@@ -1355,6 +1369,23 @@ class TeamOrchestrator:
                 )
             )
 
+        # Tier 2 breakouts succeed only if their ad-hoc route reached a terminal state
+        final_routes = store.load().routes
+        result.breakout_episodes = [
+            replace(
+                ep,
+                succeeded=any(
+                    r.entity_id == ep.entity_id
+                    and r.fsm_id == ep.adhoc_spec.fsm_id
+                    and r.lifecycle == "completed"
+                    for r in final_routes
+                ),
+            )
+            if ep.tier == "tier2_adhoc_fsm" and ep.adhoc_spec is not None
+            else ep
+            for ep in result.breakout_episodes
+        ]
+
         # Finalize task outcome (two-stage selector + WAL intent + deterministic ZIP)
         distinct_milestones = [
             a
@@ -1474,27 +1505,48 @@ class TeamOrchestrator:
             spec = self.registry.get(route.fsm_id)
             state_node = spec.state_by_id(route.current_state_id)
 
-            # Hierarchical Sub-FSM expansion: if current state delegates to sub_fsm_id
+            # Hierarchical Sub-FSM expansion: if current state delegates to sub_fsm_id,
+            # spawn the child route once and hold the parent until the child ends.
             if state_node.sub_fsm_id is not None:
                 sub_spec = self.registry.get(state_node.sub_fsm_id)
                 key = (route.entity_id, sub_spec.fsm_id)
-                if key not in spawned_entity_fsms:
-                    spawned_entity_fsms.add(key)
-                    store.apply_route_decision(
-                        action="new",
-                        route_id=None,
-                        attempt=len(result.attempts) + 1,
-                        rationale=f"Enter nested Sub-FSM {sub_spec.fsm_id}",
-                        model="core-sub-fsm",
-                        entity_id=route.entity_id,
-                        fsm_id=sub_spec.fsm_id,
-                        initial_state_id=sub_spec.initial_state,
-                    )
+                child = next(
+                    (
+                        r
+                        for r in reversed(board.routes)
+                        if r.entity_id == route.entity_id
+                        and r.fsm_id == sub_spec.fsm_id
+                    ),
+                    None,
+                )
+                if child is None:
+                    if key not in spawned_entity_fsms:
+                        spawned_entity_fsms.add(key)
+                        store.apply_route_decision(
+                            action="new",
+                            route_id=None,
+                            attempt=len(result.attempts) + 1,
+                            rationale=f"Enter nested Sub-FSM {sub_spec.fsm_id}",
+                            model="core-sub-fsm",
+                            entity_id=route.entity_id,
+                            fsm_id=sub_spec.fsm_id,
+                            initial_state_id=sub_spec.initial_state,
+                        )
+                    return
+                if (
+                    child.lifecycle == "completed"
+                    or sub_spec.state_by_id(child.current_state_id).is_terminal
+                ):
+                    child_outcome: Literal["completed", "blocked"] = "completed"
+                elif child.lifecycle == "abandoned" or child.support == "contradicted":
+                    child_outcome = "blocked"
+                else:
+                    return
                 self._advance_fsm_state(
                     store=store,
                     route_id=route.route_id,
                     spec=spec,
-                    action_outcome="completed",
+                    action_outcome=child_outcome,
                     tokens_used=0,
                     produced_keys=[],
                     result=result,
@@ -1843,7 +1895,7 @@ class TeamOrchestrator:
                 )
                 return
             finally:
-                await worker_rt.aclose()
+                await worker_rt.release()
 
             if bounded_action_only:
                 assert req_action is not None
@@ -2184,7 +2236,8 @@ class TeamOrchestrator:
                         else None,
                         tier="tier2_adhoc_fsm",
                         hypothesis=obs_decision.rationale,
-                        succeeded=True,
+                        # Backfilled in run_task once the ad-hoc route ends.
+                        succeeded=False,
                         adhoc_spec=adhoc,
                     )
                 )
@@ -2264,7 +2317,7 @@ class TeamOrchestrator:
                 )
             )
         finally:
-            await probe_rt.aclose()
+            await probe_rt.release()
 
     async def _process_artifact(
         self,
@@ -2781,7 +2834,7 @@ class TeamOrchestrator:
             budget.charge(err.usage, model_calls=err.model_calls, role="reviewer")
             return review_index == 0 and budget.remaining_tokens >= 32_000
         finally:
-            await rev_rt.aclose()
+            await rev_rt.release()
 
         active_route = next(
             r for r in board.routes if r.route_id == board.active_route_id

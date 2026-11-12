@@ -87,6 +87,25 @@ def test_fsm_yaml_roundtrip_and_cyclic_hierarchy_rejection() -> None:
 
     reg = StateMachineRegistry(guard_registry=guards)
     reg.register(reloaded)
+    with pytest.raises(ValueError, match="already registered"):
+        reg.register(reloaded)
+
+    # semantic_arbiter is not evaluated yet, so it must be rejected (not fail-open)
+    arbitered = spec.model_copy(
+        update={
+            "fsm_id": "web-recon-arbitered",
+            "transitions": [
+                TransitionSpec(
+                    id="to_done",
+                    source="fingerprint",
+                    target="done",
+                    guard=GuardClause(semantic_arbiter="pivot_judge"),
+                )
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="semantic_arbiter"):
+        reg.register(arbitered)
 
     # Cyclic sub_fsm_id hierarchy across two FSMs must be rejected
     fsm_a = StateMachineSpec(

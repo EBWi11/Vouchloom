@@ -52,6 +52,10 @@ class ModelTurnResponse:
     usage: ModelUsage
     final_text: str | None = None
     tool_commands: tuple[str, ...] = ()
+    # Named (non-shell) tool invocations, e.g. {"name": "http_request",
+    # "arguments": {...}}. Dispatched by ManagedAgentRuntime to its
+    # tool_gateway instead of the shell sandbox.
+    tool_calls: tuple[dict[str, Any], ...] = ()
     finish_reason: str | None = None
 
 
@@ -78,6 +82,18 @@ class SandboxBackend(Protocol):
 
     async def execute_command(
         self, command: str, *, sequence: int, timeout_seconds: float = 120.0
+    ) -> CommandReceipt: ...
+
+    async def aclose(self) -> None: ...
+
+
+class ToolGateway(Protocol):
+    """Named (non-shell) tool dispatcher, e.g. structured HTTP requests."""
+
+    def tool_schemas(self) -> list[dict[str, Any]]: ...
+
+    async def execute(
+        self, name: str, arguments: dict[str, Any], *, sequence: int
     ) -> CommandReceipt: ...
 
     async def aclose(self) -> None: ...
@@ -148,9 +164,11 @@ class OpenAICompatibleModelBackend:
         api_key: str,
         model: str,
         timeout_seconds: float = 180.0,
+        extra_tools: list[dict[str, Any]] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self._extra_tools = list(extra_tools or [])
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -180,23 +198,22 @@ class OpenAICompatibleModelBackend:
         if max_output_tokens is not None:
             payload["max_tokens"] = max_output_tokens
         if allow_tools:
-            payload["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "sandbox_shell",
-                        "description": (
-                            "Execute one bounded shell command in the sandbox."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"command": {"type": "string"}},
-                            "required": ["command"],
-                            "additionalProperties": False,
-                        },
+            shell_tool = {
+                "type": "function",
+                "function": {
+                    "name": "sandbox_shell",
+                    "description": (
+                        "Execute one bounded shell command in the sandbox."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                        "additionalProperties": False,
                     },
-                }
-            ]
+                },
+            }
+            payload["tools"] = [shell_tool, *self._extra_tools]
         resp = await self._client.post("/chat/completions", json=payload)
         resp.raise_for_status()
         body = resp.json()
@@ -209,17 +226,26 @@ class OpenAICompatibleModelBackend:
             total_tokens=int(raw_usage.get("total_tokens") or 0),
         )
         commands: list[str] = []
+        named_calls: list[dict[str, Any]] = []
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function") or {}
             if fn.get("name") == "sandbox_shell":
                 args = json.loads(fn.get("arguments") or "{}")
                 if isinstance(args.get("command"), str) and args["command"].strip():
                     commands.append(args["command"])
+            elif fn.get("name"):
+                named_calls.append(
+                    {
+                        "name": str(fn["name"]),
+                        "arguments": json.loads(fn.get("arguments") or "{}"),
+                    }
+                )
         return ModelTurnResponse(
             model_id=str(body.get("model") or self.model),
             usage=usage,
             final_text=msg.get("content"),
             tool_commands=tuple(commands),
+            tool_calls=tuple(named_calls),
             finish_reason=choice.get("finish_reason"),
         )
 
@@ -432,10 +458,12 @@ class ManagedAgentRuntime:
         model_backend: ModelBackend,
         *,
         sandbox: SandboxBackend | None = None,
+        tool_gateway: ToolGateway | None = None,
         enable_pure_json_repair: bool = True,
     ) -> None:
         self.model_backend = model_backend
         self.sandbox = sandbox
+        self.tool_gateway = tool_gateway
         self.enable_pure_json_repair = enable_pure_json_repair
 
     async def run(self, definition: AgentDefinition, task: str) -> AgentTrace:
@@ -527,7 +555,7 @@ class ManagedAgentRuntime:
             while True:
                 allow_tools = (
                     definition.allow_tools
-                    and self.sandbox is not None
+                    and (self.sandbox is not None or self.tool_gateway is not None)
                     and not finalization_mode
                 )
                 try:
@@ -565,7 +593,9 @@ class ManagedAgentRuntime:
                     }
                 )
 
-                if not definition.allow_tools and resp.tool_commands:
+                if not definition.allow_tools and (
+                    resp.tool_commands or resp.tool_calls
+                ):
                     raise AgentRuntimeError(
                         "tool-free stage attempted to invoke sandbox tools",
                         messages=messages,
@@ -577,6 +607,77 @@ class ManagedAgentRuntime:
                         command_receipts=command_receipts,
                         request_receipts=request_receipts,
                         code="pure_json_tool_violation",
+                        last_final_text=last_final_text,
+                    )
+
+                if resp.tool_calls and allow_tools and self.tool_gateway is not None:
+                    tool_rounds += 1
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": resp.final_text
+                            or json.dumps(
+                                {"tool_calls": [dict(c) for c in resp.tool_calls]}
+                            ),
+                        }
+                    )
+                    for call in resp.tool_calls:
+                        tool_calls += 1
+                        tool_receipt = await self.tool_gateway.execute(
+                            str(call.get("name") or ""),
+                            dict(call.get("arguments") or {}),
+                            sequence=tool_calls,
+                        )
+                        command_receipts.append(tool_receipt)
+                        request_receipts.append(
+                            {
+                                "status": "tool_executed",
+                                "tool": tool_receipt.tool_name,
+                                "sequence": tool_receipt.sequence,
+                                "command_sha256": tool_receipt.command_sha256,
+                                "output_sha256": tool_receipt.output_sha256,
+                                "exit_code": tool_receipt.exit_code,
+                            }
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "name": tool_receipt.tool_name,
+                                "content": tool_receipt.model_dump_json(),
+                            }
+                        )
+                        if (
+                            definition.finalization_tool_calls is not None
+                            and tool_calls >= definition.finalization_tool_calls
+                            and not finalization_mode
+                        ):
+                            finalization_mode = True
+                            request_receipts.append(
+                                {
+                                    "status": "tool_boundary_finalization",
+                                    "tool_calls": tool_calls,
+                                    "boundary": definition.finalization_tool_calls,
+                                }
+                            )
+                            break
+
+                if (
+                    resp.tool_commands
+                    and allow_tools
+                    and self.sandbox is None
+                    and self.tool_gateway is not None
+                ):
+                    raise AgentRuntimeError(
+                        "shell tool invoked but no sandbox is configured",
+                        messages=messages,
+                        tool_calls=tool_calls,
+                        model_calls=model_calls,
+                        tool_rounds=tool_rounds,
+                        usage=usage,
+                        model_id=model_id,
+                        command_receipts=command_receipts,
+                        request_receipts=request_receipts,
+                        code="sandbox_missing",
                         last_final_text=last_final_text,
                     )
 
@@ -920,10 +1021,14 @@ class ManagedAgentRuntime:
             json.dumps({"validation_error": str(error), "draft": draft}),
         )
 
-    async def aclose(self) -> None:
-        await self.model_backend.aclose()
+    async def release(self) -> None:
+        """Close per-run resources only; the (possibly shared) backend stays open."""
         if self.sandbox is not None:
             await self.sandbox.aclose()
+
+    async def aclose(self) -> None:
+        await self.model_backend.aclose()
+        await self.release()
 
 
 class DebugAgentRuntime:

@@ -281,9 +281,18 @@ class StateMachineRegistry:
         self._specs: dict[str, StateMachineSpec] = {}
 
     def register(self, spec: StateMachineSpec) -> None:
+        if spec.fsm_id in self._specs:
+            raise ValueError(f"FSM '{spec.fsm_id}' is already registered")
         prospective = {**self._specs, spec.fsm_id: spec}
         self._verify_acyclic_hierarchy(prospective)
         for trans in spec.transitions:
+            # semantic_arbiter is not evaluated by Core yet; reject instead of
+            # silently treating the guard as passed (fail-open).
+            if trans.guard.semantic_arbiter is not None:
+                raise ValueError(
+                    f"transition '{trans.id}' uses semantic_arbiter "
+                    f"'{trans.guard.semantic_arbiter}', which is not supported yet"
+                )
             if (
                 trans.guard.python_guard is not None
                 and self.guard_registry.get(trans.guard.python_guard) is None

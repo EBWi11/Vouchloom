@@ -14,6 +14,12 @@ from vouchloom.presets.bug_hunter import (
     register_bug_hunter_guards,
     select_bug_hunter_handbook_topics,
 )
+from vouchloom.presets.pentest import (
+    PENTEST_PRESET_ROOT,
+    PENTEST_ROOT_FSM_ID,
+    PentestPresetBundle,
+    load_pentest_preset,
+)
 
 __all__ = [
     "BUG_HUNTER_CORE_FSM_ID",
@@ -28,4 +34,8 @@ __all__ = [
     "load_bug_hunter_skills",
     "register_bug_hunter_guards",
     "select_bug_hunter_handbook_topics",
+    "PENTEST_PRESET_ROOT",
+    "PENTEST_ROOT_FSM_ID",
+    "PentestPresetBundle",
+    "load_pentest_preset",
 ]
