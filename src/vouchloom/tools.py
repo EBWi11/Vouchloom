@@ -13,6 +13,7 @@ Limitations (deliberate, "simple first" version):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -126,6 +127,61 @@ HTTP_REQUEST_TOOL_SCHEMA: dict[str, Any] = {
     },
 }
 
+# Generic discovery list: docs/spec endpoints, common API and app prefixes,
+# admin/auth entry points, server management faces, sensitive files and
+# static roots. Deliberately application-agnostic — context roots that the
+# landing page does not link (apps mounted off /) surface here via
+# /manager, /console, /api style prefixes, and cookie/link extraction is
+# the agent's job on top of these leads.
+DEFAULT_DISCOVERY_PATHS: list[str] = [
+    "/robots.txt", "/sitemap.xml", "/openapi.json", "/swagger.json",
+    "/v2/api-docs", "/docs", "/redoc", "/graphql",
+    "/api", "/api/v1", "/rest", "/actuator", "/health", "/metrics", "/status",
+    "/admin", "/login", "/signin", "/register", "/signup", "/auth", "/console",
+    "/manager", "/host-manager", "/manager/html", "/examples", "/javadoc",
+    "/.git/HEAD", "/.env", "/backup.zip", "/server-status",
+    "/static", "/assets", "/public", "/uploads", "/js", "/files",
+    # High-frequency application context roots (standard pentest wordlist
+    # entries): when an app is mounted off /, these are where it lives.
+    "/app", "/application", "/main", "/web", "/portal", "/demo", "/sample",
+    "/test", "/v2", "/old", "/swagger-ui.html", "/h2-console",
+    "/WebGoat", "/webwolf", "/petclinic", "/jenkins", "/grafana", "/kibana",
+    "/solr", "/nexus", "/sonarqube", "/jira", "/confluence",
+]
+
+MAX_PROBE_PATHS = 96
+
+PROBE_PATHS_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "probe_paths",
+        "description": (
+            "Batch-probe paths on one in-scope base URL with GET requests "
+            "and return only the leads: entries whose status is NOT 404, "
+            "each with status, content-type, redirect location and a short "
+            "body head. Omit 'paths' to use the built-in generic discovery "
+            "list (docs/spec endpoints, API prefixes, admin/auth faces, "
+            "server management paths, sensitive files)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "base_url": {
+                    "type": "string",
+                    "description": "Absolute http(s) base URL without a path.",
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Paths to probe, e.g. ['/api', '/admin'].",
+                },
+            },
+            "required": ["base_url"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 
 class HttpRequestGateway(ToolGateway):
     """Structured HTTP tool: request/response land in the receipt chain.
@@ -145,12 +201,16 @@ class HttpRequestGateway(ToolGateway):
         )
 
     def tool_schemas(self) -> list[dict[str, Any]]:
-        return [HTTP_REQUEST_TOOL_SCHEMA]
+        return [HTTP_REQUEST_TOOL_SCHEMA, PROBE_PATHS_TOOL_SCHEMA]
 
     async def execute(
         self, name: str, arguments: dict[str, Any], *, sequence: int
     ) -> CommandReceipt:
         started = time.monotonic_ns()
+        if name == "probe_paths":
+            return await self._execute_probe_paths(
+                arguments, sequence=sequence, started=started
+            )
         if name != "http_request":
             return self._receipt(
                 sequence,
@@ -205,12 +265,91 @@ class HttpRequestGateway(ToolGateway):
         output = json.dumps(out, ensure_ascii=False)
         return self._receipt(sequence, command, output, 0, started)
 
+    async def _execute_probe_paths(
+        self,
+        arguments: dict[str, Any],
+        *,
+        sequence: int,
+        started: int,
+    ) -> CommandReceipt:
+        base_url = str(arguments.get("base_url") or "").rstrip("/")
+        raw_paths = arguments.get("paths")
+        paths = (
+            [str(p) for p in raw_paths if isinstance(raw_paths, list)]
+            if isinstance(raw_paths, list)
+            else list(DEFAULT_DISCOVERY_PATHS)
+        )
+        paths = [
+            p if p.startswith("/") else f"/{p}" for p in paths[:MAX_PROBE_PATHS]
+        ]
+        command = json.dumps(
+            {"tool": "probe_paths", "base_url": base_url, "paths": paths},
+            ensure_ascii=False,
+        )
+        violation = self.policy.check_url(f"{base_url}/")
+        if violation is not None or not paths:
+            return self._receipt(
+                sequence,
+                command,
+                f"scope violation: {violation}" if violation else "no paths to probe",
+                126,
+                started,
+                tool_name="probe_paths",
+            )
+
+        async def _probe_one(path: str) -> tuple[str, httpx.Response | None, str | None]:
+            try:
+                resp = await self._client.get(base_url + path)
+                return path, resp, None
+            except httpx.HTTPError as err:
+                return path, None, str(err)
+
+        probed = await asyncio.gather(*(_probe_one(p) for p in paths))
+        leads: list[dict[str, Any]] = []
+        not_found = 0
+        for path, resp, err in probed:
+            if err is not None:
+                leads.append({"path": path, "error": err[:120]})
+                continue
+            if resp.status_code == 404:
+                not_found += 1
+                continue
+            leads.append(
+                {
+                    "path": path,
+                    "status": resp.status_code,
+                    "content_type": resp.headers.get("content-type", ""),
+                    "location": resp.headers.get("location", ""),
+                    "body_head": resp.text[:160],
+                }
+            )
+        out = {
+            "probed": len(paths),
+            "not_found_404": not_found,
+            "leads": leads,
+        }
+        return self._receipt(
+            sequence,
+            command,
+            json.dumps(out, ensure_ascii=False),
+            0,
+            started,
+            tool_name="probe_paths",
+        )
+
     def _receipt(
-        self, sequence: int, command: str, output: str, exit_code: int, started: int
+        self,
+        sequence: int,
+        command: str,
+        output: str,
+        exit_code: int,
+        started: int,
+        *,
+        tool_name: str = "http_request",
     ) -> CommandReceipt:
         duration_ms = (time.monotonic_ns() - started) // 1_000_000
         return CommandReceipt.from_execution(
-            tool_name="http_request",
+            tool_name=tool_name,
             sequence=sequence,
             command=command,
             output=output,
